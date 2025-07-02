@@ -8,7 +8,7 @@ A completely modernized LuCI interface for ZeroTier VPN service, converted from 
 
 This project was copyed from https://github.com/zhengmz/luci-app-zerotier and rewrited to JavaScript using AUGMENT Code plugin in VS Code.
 
-本项目的原始lua源码拷贝自https://github.com/zhengmz/luci-app-zerotier并使用AUGMENT Code插件在VS Code中重写成JavaScript代码。
+本项目的原始lua源码拷贝自https://github.com/zhengmz/luci-app-zerotier 并使用AUGMENT Code插件在VS Code中重写成JavaScript代码。
 
 This project represents a complete modernization of the original Lua-based luci-app-zerotier for OpenWrt 24.10, featuring:
 
