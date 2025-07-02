@@ -1,0 +1,136 @@
+#!/bin/sh
+
+. /usr/share/libubox/jshn.sh
+
+# Security: Define allowed operations only
+# No arbitrary command execution allowed
+
+case "$1" in
+	list)
+		json_init
+		json_add_object "reload"
+		json_close_object
+		json_add_object "status"
+		json_close_object
+		json_add_object "get_interfaces"
+		json_close_object
+		json_add_object "get_networks"
+		json_close_object
+		json_add_object "restart_service"
+		json_close_object
+		json_dump
+		;;
+	call)
+		case "$2" in
+			reload)
+				# Reload luci-zerotier service - SAFE: specific operation
+				json_init
+
+				# Validate that the service exists before reloading
+				if [ ! -f "/etc/init.d/luci-zerotier" ]; then
+					json_add_int "code" 1
+					json_add_string "stdout" ""
+					json_add_string "stderr" "luci-zerotier service not found"
+				else
+					output=$(/etc/init.d/luci-zerotier reload 2>&1)
+					exit_code=$?
+
+					json_add_int "code" "$exit_code"
+					json_add_string "stdout" "$output"
+					json_add_string "stderr" ""
+				fi
+
+				json_dump
+				;;
+			status)
+				# Get luci-zerotier service status - SAFE: read-only operation
+				json_init
+
+				# Check if zerotier-one is running
+				if pgrep /usr/bin/zerotier-one >/dev/null 2>&1; then
+					json_add_boolean "running" 1
+				else
+					json_add_boolean "running" 0
+				fi
+
+				# Get current NAT setting
+				nat_setting=$(uci get zerotier.global.nat 2>/dev/null || echo "0")
+				json_add_string "nat" "$nat_setting"
+
+				# Check firewall rules
+				firewall_rules=$(uci show firewall | grep zerotier | wc -l)
+				json_add_int "firewall_rules" "$firewall_rules"
+
+				json_dump
+				;;
+			get_interfaces)
+				# Get ZeroTier interface information - SAFE: read-only operation
+				json_init
+
+				# Use zerotier-cli to get interface info safely
+				if command -v zerotier-cli >/dev/null 2>&1; then
+					interfaces_output=$(zerotier-cli listnetworks 2>&1)
+					exit_code=$?
+
+					json_add_int "code" "$exit_code"
+					json_add_string "interfaces" "$interfaces_output"
+					json_add_string "stderr" ""
+				else
+					json_add_int "code" 1
+					json_add_string "interfaces" ""
+					json_add_string "stderr" "zerotier-cli not found"
+				fi
+
+				json_dump
+				;;
+			get_networks)
+				# Get ZeroTier network status - SAFE: read-only operation
+				json_init
+
+				if command -v zerotier-cli >/dev/null 2>&1; then
+					networks_output=$(zerotier-cli info 2>&1)
+					exit_code=$?
+
+					json_add_int "code" "$exit_code"
+					json_add_string "networks" "$networks_output"
+					json_add_string "stderr" ""
+				else
+					json_add_int "code" 1
+					json_add_string "networks" ""
+					json_add_string "stderr" "zerotier-cli not found"
+				fi
+
+				json_dump
+				;;
+			restart_service)
+				# Restart ZeroTier service - SAFE: specific operation
+				json_init
+
+				# Validate that the service exists
+				if [ ! -f "/etc/init.d/zerotier" ]; then
+					json_add_int "code" 1
+					json_add_string "stdout" ""
+					json_add_string "stderr" "zerotier service not found"
+				else
+					# Restart the main zerotier service
+					output=$(/etc/init.d/zerotier restart 2>&1)
+					exit_code=$?
+
+					json_add_int "code" "$exit_code"
+					json_add_string "stdout" "$output"
+					json_add_string "stderr" ""
+				fi
+
+				json_dump
+				;;
+			*)
+				# Invalid method - return error
+				json_init
+				json_add_int "code" 1
+				json_add_string "stdout" ""
+				json_add_string "stderr" "Invalid method: $2"
+				json_dump
+				;;
+		esac
+		;;
+esac

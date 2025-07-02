@@ -1,0 +1,24 @@
+#!/bin/sh
+
+# Post-installation script for luci-app-zerotier
+# Ensures RPC script has correct permissions and restarts rpcd
+
+# Set executable permission for RPC script
+if [ -f /usr/libexec/rpcd/luci-zerotier ]; then
+    chmod +x /usr/libexec/rpcd/luci-zerotier
+    echo "Set executable permission for luci-zerotier RPC script"
+fi
+
+# Restart rpcd service to load new RPC methods
+if [ -x /etc/init.d/rpcd ]; then
+    /etc/init.d/rpcd restart
+    echo "Restarted rpcd service to load luci-zerotier RPC methods"
+fi
+
+# Restart uhttpd to ensure LuCI picks up new files
+if [ -x /etc/init.d/uhttpd ]; then
+    /etc/init.d/uhttpd restart
+    echo "Restarted uhttpd service"
+fi
+
+exit 0

@@ -1,0 +1,19 @@
+{
+	"luci-app-zerotier": {
+		"description": "Grant UCI access for luci-app-zerotier",
+		"read": {
+			"uci": [ "zerotier" ],
+			"ubus": {
+				"luci": [ "exec", "getInitList" ],
+				"zerotier": [ "status", "interfaces", "reload" ]
+			}
+		},
+		"write": {
+			"uci": [ "zerotier" ],
+			"ubus": {
+				"luci": [ "exec" ],
+				"zerotier": [ "reload" ]
+			}
+		}
+	}
+}

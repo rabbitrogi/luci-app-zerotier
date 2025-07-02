@@ -1,0 +1,86 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+
+PROG=/etc/init.d/zerotier
+
+get_config() {
+	config_get_bool enabled $1 enabled 0
+	config_get_bool nat $1 nat 0
+}
+
+log() {
+	echo "$@"
+	logger -t luci-zerotier "$@" # debug
+}
+
+start() {
+	config_load zerotier
+	config_foreach get_config zerotier
+
+	[ $enabled -eq 0 ] && log "Service disabled in config." && return 0
+
+	# Ensure that the service is running
+	if ! $PROG running; then
+		log "Service status isn't running!"
+		return 1
+	fi
+
+	[ $nat -eq 0 ] && log "NAT disabled in config." && return 0
+
+	# Wait zt tun device
+	while [ "$(ifconfig | grep 'zt' | awk '{print $1}')" = "" ]
+	do
+		log "Waiting zt device ... "
+		sleep 1
+	done
+
+	local zt_devs FW ip_segment
+
+	zt_devs="$(ifconfig | grep 'zt' | awk '{print $1}')"
+
+	# Configure firewall using uci
+	uci -q delete firewall.zerotier
+	uci set firewall.zerotier=zone
+	uci set firewall.zerotier.name='zerotier'
+	uci set firewall.zerotier.input='ACCEPT'
+	uci set firewall.zerotier.output='ACCEPT'
+	uci set firewall.zerotier.forward='ACCEPT'
+	uci set firewall.zerotier.masq='1'
+	
+	for i in ${zt_devs}; do
+		uci add_list firewall.zerotier.device="$i"
+	done
+	
+	# Add forwardings
+	uci -q delete firewall.zerotier_lan
+	uci set firewall.zerotier_lan=forwarding
+	uci set firewall.zerotier_lan.src='zerotier'
+	uci set firewall.zerotier_lan.dest='lan'
+	
+	uci -q delete firewall.lan_zerotier
+	uci set firewall.lan_zerotier=forwarding
+	uci set firewall.lan_zerotier.src='lan'
+	uci set firewall.lan_zerotier.dest='zerotier'
+	
+	uci commit firewall
+	/etc/init.d/firewall reload
+	
+	log "Added uci firewall rules for ZeroTier interfaces"
+}
+
+stop() {
+	local zt_devs FW ip_segment rule
+
+	zt_devs="$(ifconfig | grep 'zt' | awk '{print $1}')"
+	[ -z "${zt_devs}" ] && return 0
+
+	# Clean up uci firewall rules
+	uci -q delete firewall.zerotier
+	uci -q delete firewall.zerotier_lan
+	uci -q delete firewall.lan_zerotier
+	uci commit firewall
+	/etc/init.d/firewall reload
+	
+	log "Removed uci firewall rules for ZeroTier"
+}

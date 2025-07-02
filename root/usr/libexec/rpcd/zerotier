@@ -1,0 +1,47 @@
+#!/bin/sh
+
+. /usr/share/libubox/jshn.sh
+
+case "$1" in
+	list)
+		json_init
+		json_add_object "status"
+		json_close_object
+		json_add_object "interfaces"
+		json_close_object
+		json_add_object "reload"
+		json_close_object
+		json_dump
+		;;
+	call)
+		case "$2" in
+			status)
+				json_init
+				if pgrep /usr/bin/zerotier-one >/dev/null 2>&1; then
+					json_add_boolean "running" 1
+				else
+					json_add_boolean "running" 0
+				fi
+				json_dump
+				;;
+			interfaces)
+				json_init
+				interfaces=$(for i in $(ifconfig | grep 'zt' | awk '{print $1}'); do ifconfig $i; done 2>/dev/null)
+				json_add_string "interfaces" "$interfaces"
+				json_dump
+				;;
+			reload)
+				json_init
+				logger -t zerotier "RPC reload request received"
+				if /etc/init.d/luci-zerotier reload >/dev/null 2>&1; then
+					json_add_boolean "success" 1
+					json_add_string "message" "Service reloaded successfully"
+				else
+					json_add_boolean "success" 0
+					json_add_string "message" "Failed to reload service"
+				fi
+				json_dump
+				;;
+		esac
+		;;
+esac
