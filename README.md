@@ -1,8 +1,12 @@
-# LuCI ZeroTier - Modern JavaScript Edition / 现代 JavaScript 版本
+# LuCI ZeroTier - JavaScript Edition / JavaScript 版本
 
 A completely modernized LuCI interface for ZeroTier VPN service, converted from legacy Lua to modern JavaScript with enhanced security and automation features.
 
 为 ZeroTier VPN 服务提供的完全现代化 LuCI 界面，从传统 Lua 转换为现代 JavaScript，具有增强的安全性和自动化功能。
+
+This README.md was created by AUGMENT Code plugin in VS Code.
+
+这个README.md由AUGMENT Code插件在VS Code中生成（AI真的很会自吹自擂，AUGMENT Code还挺好用的……）。
 
 ## 🎯 Project Overview / 项目概述
 
@@ -32,14 +36,6 @@ This project represents a complete modernization of the original Lua-based luci-
 - ✅ **Custom RPC Security** / **自定义 RPC 安全**: Secure, purpose-built RPC methods replacing dangerous exec / 安全的专用 RPC 方法，替代危险的 exec
 - ✅ **Automated Service Management** / **自动化服务管理**: Intelligent service reload with detailed feedback / 智能服务重载，提供详细反馈
 - ✅ **Enhanced Error Handling** / **增强的错误处理**: Comprehensive error reporting and user notifications / 全面的错误报告和用户通知
-
-## 🛡️ Security Features / 安全特性
-
-### Security Hardening (v2.2-r20) / 安全加固 (v2.2-r20)
-- **Removed arbitrary command execution** / **移除任意命令执行**: Eliminated critical security vulnerability (CVSS 9.8 → 2.0) / 消除严重安全漏洞 (CVSS 9.8 → 2.0)
-- **Secure RPC methods** / **安全的 RPC 方法**: Purpose-built methods with input validation / 专用方法，具有输入验证
-- **Principle of least privilege** / **最小权限原则**: Strict permission control with read/write separation / 严格的权限控制，读写分离
-- **Input validation** / **输入验证**: All parameters validated and sanitized / 所有参数都经过验证和清理
 
 ### Available RPC Methods / 可用的 RPC 方法
 ```bash
@@ -74,7 +70,7 @@ make package/luci-app-zerotier/compile
 ## 📋 Usage / 使用方法
 
 ### Web Interface / Web 界面
-1. Navigate to **Network → ZeroTier** in LuCI / 在 LuCI 中导航到 **网络 → ZeroTier**
+1. Navigate to **VPN → ZeroTier** in LuCI / 在 LuCI 中导航到 **VPN → ZeroTier**
 2. Configure your ZeroTier networks / 配置您的 ZeroTier 网络
 3. Enable **Auto NAT Clients** for automatic firewall management / 启用 **Auto NAT Clients** 进行自动防火墙管理
 4. Click **Save & Apply** - service will auto-reload in 5 seconds / 点击 **保存并应用** - 服务将在 5 秒后自动重载
@@ -160,30 +156,6 @@ root/
 | **User Experience** / **用户体验** | Fully automated workflow / 完全自动化工作流程 |
 | **Compatibility** / **兼容性** | OpenWrt 24.10+ |
 
-## 🔮 Future Roadmap / 未来路线图
-
-### Short-term (1 month) / 短期（1个月）
-- [ ] Enhanced error handling and user feedback / 增强错误处理和用户反馈
-- [ ] Code refactoring for better maintainability / 代码重构以提高可维护性
-- [ ] Additional unit tests / 添加单元测试
-
-### Long-term (1 year) / 长期（1年）
-- [ ] Network topology visualization / 网络拓扑可视化
-- [ ] Advanced monitoring and alerting / 高级监控和告警
-- [ ] REST API integration / REST API 集成
-- [ ] Multi-language expansion / 多语言扩展
-
-## 🤝 Contributing / 贡献
-
-This project demonstrates modern OpenWrt/LuCI development practices:
-
-本项目展示了现代 OpenWrt/LuCI 开发实践：
-
-- Security-first design principles / 安全优先的设计原则
-- Modern JavaScript architecture / 现代 JavaScript 架构
-- Comprehensive testing and validation / 全面的测试和验证
-- Production-ready deployment processes / 生产就绪的部署流程
-
 ## 📄 License / 许可证
 
 Apache License 2.0 - See LICENSE file for details.
@@ -192,12 +164,11 @@ Apache 许可证 2.0 - 详情请参阅 LICENSE 文件。
 
 ## 🙏 Acknowledgments / 致谢
 
+- luci-app-zerotier lua edition from https://github.com/zhengmz/luci-app-zerotier
+- luci-app-zerotier 的lua版本来自于 https://github.com/zhengmz/luci-app-zerotier 
 - OpenWrt development community / OpenWrt 开发社区
 - LuCI framework maintainers / LuCI 框架维护者
 - ZeroTier project team / ZeroTier 项目团队
 - Security research community / 安全研究社区
 
 ---
-
-**Status** / **状态**: ✅ Production Ready / 生产就绪 | **Security** / **安全**: ✅ Hardened / 已加固 | **Compatibility** / **兼容性**: OpenWrt 24.10+
-
