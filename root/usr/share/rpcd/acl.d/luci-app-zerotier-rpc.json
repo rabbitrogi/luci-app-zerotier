@@ -5,8 +5,10 @@
 			"ubus": {
 				"luci-zerotier": [
 					"status",
-					"get_interfaces",
-					"get_networks"
+					"get_networks",
+					"get_identity",
+					"get_peers",
+					"ping_networks"
 				]
 			}
 		},

@@ -17,7 +17,7 @@ case "$1" in
 		case "$2" in
 			status)
 				json_init
-				if pgrep /usr/bin/zerotier-one >/dev/null 2>&1; then
+				if ps 2>/dev/null | grep -q '[/]usr/bin/zerotier-one'; then
 					json_add_boolean "running" 1
 				else
 					json_add_boolean "running" 0
@@ -26,7 +26,7 @@ case "$1" in
 				;;
 			interfaces)
 				json_init
-				interfaces=$(for i in $(ifconfig | grep 'zt' | awk '{print $1}'); do ifconfig $i; done 2>/dev/null)
+				interfaces=$(for i in $(ifconfig | grep '^zt' | awk '{print $1}'); do ifconfig $i; done 2>/dev/null)
 				json_add_string "interfaces" "$interfaces"
 				json_dump
 				;;

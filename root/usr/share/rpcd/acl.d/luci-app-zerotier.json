@@ -4,14 +4,13 @@
 		"read": {
 			"uci": [ "zerotier" ],
 			"ubus": {
-				"luci": [ "exec", "getInitList" ],
+				"luci": [ "getInitList" ],
 				"zerotier": [ "status", "interfaces", "reload" ]
 			}
 		},
 		"write": {
 			"uci": [ "zerotier" ],
 			"ubus": {
-				"luci": [ "exec" ],
 				"zerotier": [ "reload" ]
 			}
 		}

@@ -12,9 +12,13 @@ case "$1" in
 		json_close_object
 		json_add_object "status"
 		json_close_object
-		json_add_object "get_interfaces"
-		json_close_object
 		json_add_object "get_networks"
+		json_close_object
+		json_add_object "get_identity"
+		json_close_object
+		json_add_object "get_peers"
+		json_close_object
+		json_add_object "ping_networks"
 		json_close_object
 		json_add_object "restart_service"
 		json_close_object
@@ -47,7 +51,7 @@ case "$1" in
 				json_init
 
 				# Check if zerotier-one is running
-				if pgrep /usr/bin/zerotier-one >/dev/null 2>&1; then
+				if ps 2>/dev/null | grep -q '[/]usr/bin/zerotier-one'; then
 					json_add_boolean "running" 1
 				else
 					json_add_boolean "running" 0
@@ -63,32 +67,12 @@ case "$1" in
 
 				json_dump
 				;;
-			get_interfaces)
-				# Get ZeroTier interface information - SAFE: read-only operation
-				json_init
-
-				# Use zerotier-cli to get interface info safely
-				if command -v zerotier-cli >/dev/null 2>&1; then
-					interfaces_output=$(zerotier-cli listnetworks 2>&1)
-					exit_code=$?
-
-					json_add_int "code" "$exit_code"
-					json_add_string "interfaces" "$interfaces_output"
-					json_add_string "stderr" ""
-				else
-					json_add_int "code" 1
-					json_add_string "interfaces" ""
-					json_add_string "stderr" "zerotier-cli not found"
-				fi
-
-				json_dump
-				;;
 			get_networks)
 				# Get ZeroTier network status - SAFE: read-only operation
 				json_init
 
 				if command -v zerotier-cli >/dev/null 2>&1; then
-					networks_output=$(zerotier-cli info 2>&1)
+					networks_output=$(zerotier-cli listnetworks 2>&1)
 					exit_code=$?
 
 					json_add_int "code" "$exit_code"
@@ -100,6 +84,163 @@ case "$1" in
 					json_add_string "stderr" "zerotier-cli not found"
 				fi
 
+				json_dump
+				;;
+			get_identity)
+				# Get ZeroTier node identity (address) - SAFE: read-only operation
+				json_init
+
+				if command -v zerotier-cli >/dev/null 2>&1; then
+					info_output=$(zerotier-cli info 2>&1)
+					exit_code=$?
+
+					if [ "$exit_code" -eq 0 ]; then
+						# Parse identity from "200 info <address> <timestamp> <level>"
+						identity=$(echo "$info_output" | awk 'NR==1 {print $3}')
+						json_add_int "code" "0"
+						json_add_string "identity" "$identity"
+						json_add_string "raw" "$info_output"
+						json_add_string "stderr" ""
+					else
+						json_add_int "code" "$exit_code"
+						json_add_string "identity" ""
+						json_add_string "raw" "$info_output"
+						json_add_string "stderr" ""
+					fi
+
+				else
+					json_add_int "code" 1
+					json_add_string "identity" ""
+					json_add_string "raw" ""
+					json_add_string "stderr" "zerotier-cli not found"
+				fi
+
+				json_dump
+				;;
+			get_peers)
+				# Get ZeroTier peers - SAFE: read-only operation
+				json_init
+
+				if command -v zerotier-cli >/dev/null 2>&1; then
+					peers_output=$(zerotier-cli peers 2>&1)
+					exit_code=$?
+
+					json_add_int "code" "$exit_code"
+					json_add_string "peers" "$peers_output"
+					json_add_string "stderr" ""
+				else
+					json_add_int "code" 1
+					json_add_string "peers" ""
+					json_add_string "stderr" "zerotier-cli not found"
+				fi
+
+				json_dump
+				;;
+			ping_networks)
+				json_init
+
+				tmpfile=$(mktemp /tmp/zt_ping_XXXXXX)
+				trap 'rm -f "$tmpfile"' EXIT INT TERM
+				rm -f "$tmpfile"
+
+				if ! command -v ping >/dev/null 2>&1; then
+					json_add_int "code" 1
+					json_add_string "result" ""
+					json_add_string "stderr" "ping not found"
+					json_dump
+					return
+				fi
+
+				if ! command -v zerotier-cli >/dev/null 2>&1; then
+					json_add_int "code" 1
+					json_add_string "result" ""
+					json_add_string "stderr" "zerotier-cli not found"
+					json_dump
+					return
+				fi
+
+				output=$(zerotier-cli listnetworks 2>&1)
+				if [ $? -ne 0 ]; then
+					json_add_int "code" 1
+					json_add_string "result" ""
+					json_add_string "stderr" "zerotier-cli failed"
+					json_dump
+					return
+				fi
+
+				# 用 here-doc 替代管道，确保 while 循环在当前 shell 运行
+				# 这样 wait 才能正确等待后台 ping 进程
+				while IFS= read -r line; do
+					set -- $line
+					if [ $# -ge 9 ]; then
+						for ip_cidr in $(echo "$9" | tr ',' ' '); do
+							case "$ip_cidr" in
+								*.*.*.*/*)
+									ip=${ip_cidr%%/*}
+									cidr=${ip_cidr##*/}
+									if ! echo "$ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+										continue
+									fi
+									if [ "$cidr" -lt 1 ] || [ "$cidr" -gt 32 ]; then
+										continue
+									fi
+									_oldIFS="$IFS"
+									IFS='.'
+									set -- $ip
+									i1="$1"; i2="$2"; i3="$3"; i4="$4"
+									IFS="$_oldIFS"
+									if [ "$cidr" -le 24 ] && [ "$cidr" -ge 23 ]; then
+										if [ "$cidr" = "23" ]; then
+											base_i3=$((i3 & ~1))
+											for j in $(seq 0 255); do
+												( ping -c 2 -W 1 "$i1.$i2.$base_i3.$j" >/dev/null 2>&1 && echo "OK:$i1.$i2.$base_i3.$j" || echo "FAIL:$i1.$i2.$base_i3.$j" ) >> "$tmpfile" 2>&1 &
+											done
+											_base_i3=$((base_i3 + 1))
+											for j in $(seq 0 255); do
+												( ping -c 2 -W 1 "$i1.$i2.$_base_i3.$j" >/dev/null 2>&1 && echo "OK:$i1.$i2.$_base_i3.$j" || echo "FAIL:$i1.$i2.$_base_i3.$j" ) >> "$tmpfile" 2>&1 &
+											done
+										else
+											for j in $(seq 0 255); do
+												( ping -c 2 -W 1 "$i1.$i2.$i3.$j" >/dev/null 2>&1 && echo "OK:$i1.$i2.$i3.$j" || echo "FAIL:$i1.$i2.$i3.$j" ) >> "$tmpfile" 2>&1 &
+											done
+										fi
+									elif [ "$cidr" -lt 23 ]; then
+										for j in $(seq 0 255); do
+											( ping -c 2 -W 1 "$i1.$i2.$i3.$j" >/dev/null 2>&1 && echo "OK:$i1.$i2.$i3.$j" || echo "FAIL:$i1.$i2.$i3.$j" ) >> "$tmpfile" 2>&1 &
+										done
+									else
+										shifts=$((32 - cidr))
+										host_count=1
+										while [ "$shifts" -gt 0 ]; do
+											host_count=$((host_count * 2))
+											shifts=$((shifts - 1))
+										done
+										net_mask=$((256 - host_count))
+										net_addr=$((i4 & net_mask))
+										for j in $(seq "$net_addr" "$((net_addr + host_count - 1))"); do
+											( ping -c 2 -W 1 "$i1.$i2.$i3.$j" >/dev/null 2>&1 && echo "OK:$i1.$i2.$i3.$j" || echo "FAIL:$i1.$i2.$i3.$j" ) >> "$tmpfile" 2>&1 &
+										done
+									fi
+									;;
+							esac
+						done
+					fi
+				done <<EOF
+$(echo "$output" | awk 'NR>1')
+EOF
+
+				wait
+
+				if [ -f "$tmpfile" ]; then
+					result=$(sort -u "$tmpfile" | tr '\n' '|')
+					rm -f "$tmpfile"
+				else
+					result="no_result"
+				fi
+
+				json_add_int "code" 0
+				json_add_string "result" "$result"
+				json_add_string "stderr" ""
 				json_dump
 				;;
 			restart_service)

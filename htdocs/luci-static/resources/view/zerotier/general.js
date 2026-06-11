@@ -6,9 +6,14 @@
 'require poll';
 'require rpc';
 
-var callZerotierStatus = rpc.declare({
-	object: 'zerotier',
+var callLuciZerotierStatus = rpc.declare({
+	object: 'luci-zerotier',
 	method: 'status'
+});
+
+var callLuciZerotierIdentity = rpc.declare({
+	object: 'luci-zerotier',
+	method: 'get_identity'
 });
 
 return view.extend({
@@ -24,72 +29,29 @@ return view.extend({
 		m = new form.Map('zerotier', _('ZeroTier'),
 			_('Zerotier is an open source, cross-platform and easy to use virtual LAN'));
 
-		// Simple and direct reload after save - no complex verification
 		var originalSave = m.save.bind(m);
 		m.save = function() {
-			console.log('ZeroTier config save started...');
-
 			return originalSave().then(function(result) {
-				console.log('ZeroTier config saved, scheduling service reload in 5 seconds...');
+				var luciZerotierRpc = rpc.declare({
+					object: 'luci-zerotier',
+					method: 'reload'
+				});
 
-				// Use custom luci-zerotier RPC for automatic reload
-				console.log('Scheduling service reload in 5 seconds...');
+				L.resolveDefault(luciZerotierRpc(), {})
+				.then(function(reloadResult) {
+					if (reloadResult && reloadResult.code === 0) {
+						var natValue = uci.get('zerotier', 'global', 'nat') || '0';
+						var natMsg = natValue === '1' ? _('Auto NAT: Enabled') : _('Auto NAT: Disabled');
+						ui.addNotification(null, E('p', natMsg), 'info');
+					} else {
+						var errorMsg = reloadResult && reloadResult.stderr ? reloadResult.stderr : _('Unknown error');
+						ui.addNotification(null, E('p', _('Service reload failed: ') + errorMsg), 'warning');
+					}
+				})
+				.catch(function(error) {
+					ui.addNotification(null, E('p', _('Failed to reload service, please run manually: /etc/init.d/luci-zerotier reload')), 'warning');
+				});
 
-				setTimeout(function() {
-					console.log('=== 5 SECONDS ELAPSED - EXECUTING AUTOMATIC RELOAD ===');
-
-					// Use our custom luci-zerotier RPC
-					var luciZerotierRpc = rpc.declare({
-						object: 'luci-zerotier',
-						method: 'reload'
-					});
-
-					console.log('Executing automatic reload via luci-zerotier RPC...');
-					L.resolveDefault(luciZerotierRpc(), {})
-					.then(function(reloadResult) {
-						console.log('Reload result:', reloadResult);
-
-						if (reloadResult && reloadResult.code === 0) {
-							console.log('Reload successful, output:', reloadResult.stdout);
-
-							// Show the reload output to user
-							if (reloadResult.stdout && reloadResult.stdout.trim()) {
-								ui.addNotification(null, E('div', [
-									E('p', { style: 'font-weight: bold; color: green;' }, _('ZeroTier Service Reloaded Successfully')),
-									E('pre', {
-										style: 'background: #f0f8f0; padding: 10px; border-radius: 4px; font-size: 12px; white-space: pre-wrap; border-left: 4px solid #4CAF50;'
-									}, reloadResult.stdout)
-								]), 'info');
-							} else {
-								ui.addNotification(null, E('p', _('ZeroTier service reloaded successfully.')), 'info');
-							}
-
-							// Check final status
-							setTimeout(function() {
-								L.resolveDefault(callZerotierStatus(), {}).then(function(status) {
-									console.log('Final service status:', status);
-									var statusMsg = 'Service status: ' + (status && status.running ? 'Running' : 'Stopped');
-									var natValue = uci.get('zerotier', 'global', 'nat') || '0';
-									var natMsg = 'NAT setting: ' + (natValue === '1' ? 'Enabled' : 'Disabled');
-
-									ui.addNotification(null, E('p', statusMsg + ' | ' + natMsg), 'info');
-								});
-							}, 2000);
-
-						} else {
-							console.warn('Reload failed or returned error:', reloadResult);
-							var errorMsg = reloadResult && reloadResult.stderr ? reloadResult.stderr : 'Unknown error';
-							ui.addNotification(null, E('p', _('Service reload failed: ') + errorMsg), 'warning');
-						}
-					})
-					.catch(function(error) {
-						console.error('RPC reload failed:', error);
-						ui.addNotification(null, E('p', _('Failed to reload service automatically. Please run manually: /etc/init.d/luci-zerotier reload')), 'warning');
-					});
-				}, 5000); // Wait 5 seconds after save
-
-				// Return immediately after scheduling, don't wait for reload
-				ui.addNotification(null, E('p', _('ZeroTier configuration saved. Service will reload in 5 seconds.')), 'info');
 				return result;
 			});
 		};
@@ -131,7 +93,7 @@ return view.extend({
 		o = s.taboption('more', form.Value, 'port', _('Port'));
 		o.description = _('Port of zerotier service, default 9993');
 		o.placeholder = '9993';
-		o.datatype = 'and(port,min(1025))';
+		o.datatype = 'port';
 
 		o = s.taboption('more', form.TextValue, 'secret', _('Secret'));
 		o.description = _('Secret of zerotier client');
@@ -140,11 +102,24 @@ return view.extend({
 		o = s.taboption('more', form.Value, 'local_conf', _('Local configuration'));
 		o.description = _('Path to the local.conf');
 		o.placeholder = '/etc/zerotier.conf';
-		o.datatype = 'file';
+		o.validate = function(section_id, value) {
+			if (!value) return true;
+			if (!value.match(/^(\/etc\/zerotier|\/var\/lib\/zerotier|\/tmp)(\/|$)/)) {
+				return _('Path must be within /etc/zerotier, /var/lib/zerotier, or /tmp');
+			}
+			return true;
+		};
 
 		o = s.taboption('more', form.Value, 'config_path', _('Configuration folder'));
 		o.description = _('Persistent configuration folder (for ZT controller mode)');
 		o.placeholder = '/etc/zerotier';
+		o.validate = function(section_id, value) {
+			if (!value) return true;
+			if (!value.match(/^(\/etc\/zerotier|\/var\/lib\/zerotier|\/tmp)(\/|$)/)) {
+				return _('Path must be within /etc/zerotier, /var/lib/zerotier, or /tmp');
+			}
+			return true;
+		};
 
 		o = s.taboption('more', form.Flag, 'copy_config_path', _('Copy configuration folder'));
 		o.description = _('Copy configuration folder to RAM to prevent writing to flash (for ZT controller mode)');
@@ -171,43 +146,79 @@ return view.extend({
 		o.default = '0';
 
 		return m.render().then(function(mapEl) {
-			// Add status display right after the main title
-			var statusDiv = E('div', {
-				'id': 'zerotier_status',
-				'style': 'margin: 16px 16px; padding: 8px 0; color: inherit; font-size: 16px;'
+			var infoDiv = E('div', {
+				'id': 'zerotier_info',
+				'style': 'margin: 0 16px; padding: 0; color: inherit; font-size: 16px; line-height: 1.6;'
 			}, [
-				E('em', {}, _('Collecting data...'))
+				E('span', {'id': 'zerotier_status'}, [
+					E('em', {}, [_('Collecting data...')])
+				]),
+				E('br', {}),
+				E('span', {'id': 'zerotier_identity'}, [
+					E('em', {}, [_('Collecting identity...')])
+				])
 			]);
 
-			// Find the main description and insert status after it
 			var descDiv = mapEl.querySelector('.cbi-map-descr');
 			if (descDiv && descDiv.parentNode) {
-				descDiv.parentNode.insertBefore(statusDiv, descDiv.nextSibling);
+				descDiv.parentNode.insertBefore(infoDiv, descDiv.nextSibling);
 			} else {
-				// Fallback: insert at the beginning
-				mapEl.insertBefore(statusDiv, mapEl.firstChild);
+				mapEl.insertBefore(infoDiv, mapEl.firstChild);
 			}
 
-			// Add status polling
-			poll.add(function() {
-				return L.resolveDefault(callZerotierStatus(), {}).then(function(res) {
-					console.log('ZeroTier status response:', res);
+			var updateStatus = function() {
+				return L.resolveDefault(callLuciZerotierStatus(), {}).then(function(res) {
 					var statusEl = document.getElementById('zerotier_status');
-					if (statusEl) {
-						if (res && (res.running === true || res.running === 1)) {
-							statusEl.innerHTML = '<em><b style="color:green">ZeroTier ' + _('RUNNING') + '</b></em>';
-						} else {
-							statusEl.innerHTML = '<em><b style="color:red">ZeroTier ' + _('NOT RUNNING') + '</b></em>';
-						}
+					if (statusEl && res) {
+						var runningClass = res.running ? 'green' : 'red';
+						var runningText = res.running ? _('RUNNING') : _('NOT RUNNING');
+						statusEl.textContent = '';
+						statusEl.appendChild(E('b', {
+							'style': 'color:' + runningClass
+						}, ['ZeroTier ' + runningText]));
 					}
 				}).catch(function(err) {
-					console.error('ZeroTier status check failed:', err);
 					var statusEl = document.getElementById('zerotier_status');
 					if (statusEl) {
-						statusEl.innerHTML = '<em><b style="color:red">ZeroTier ' + _('NOT RUNNING') + '</b></em>';
+						statusEl.textContent = '';
+						statusEl.appendChild(E('b', {
+							'style': 'color:red'
+						}, ['ZeroTier ' + _('NOT RUNNING')]));
 					}
 				});
-			}, 3);
+			};
+
+			var updateIdentity = function() {
+				return L.resolveDefault(callLuciZerotierIdentity(), {}).then(function(res) {
+					var identityEl = document.getElementById('zerotier_identity');
+					if (identityEl && res && res.identity) {
+						identityEl.textContent = '';
+						identityEl.appendChild(E('span', {}, [
+							_('Address') + ': '
+						]));
+						identityEl.appendChild(E('b', {
+							'style': 'font-family: monospace; color: inherit;'
+						}, [res.identity]));
+					}
+				}).catch(function(err) {
+					var identityEl = document.getElementById('zerotier_identity');
+					if (identityEl) {
+						identityEl.textContent = '';
+						identityEl.appendChild(E('span', {}, [
+							_('Address') + ': '
+						]));
+						identityEl.appendChild(E('b', {
+							'style': 'color: gray;'
+						}, ['-']));
+					}
+				});
+			};
+
+			poll.add(updateStatus, 3);
+			poll.add(updateIdentity, 10);
+
+			updateStatus();
+			updateIdentity();
 
 			return mapEl;
 		});

@@ -18,26 +18,39 @@ start() {
 	config_load zerotier
 	config_foreach get_config zerotier
 
-	[ $enabled -eq 0 ] && log "Service disabled in config." && return 0
+	[ "$enabled" -eq 0 ] && log "Service disabled in config." && return 0
 
-	# Ensure that the service is running
-	if ! $PROG running; then
-		log "Service status isn't running!"
+	if ! $PROG running 2>/dev/null; then
+		log "ZeroTier service is not running!"
 		return 1
 	fi
 
-	[ $nat -eq 0 ] && log "NAT disabled in config." && return 0
+	if ! ps 2>/dev/null | grep -q '[/]usr/bin/zerotier-one'; then
+		log "ZeroTier daemon (zerotier-one) is not running!"
+		return 1
+	fi
 
-	# Wait zt tun device
-	while [ "$(ifconfig | grep 'zt' | awk '{print $1}')" = "" ]
-	do
-		log "Waiting zt device ... "
-		sleep 1
+	[ "$nat" -eq 0 ] && log "NAT disabled in config." && return 0
+
+	local zt_devs zt_timeout zt_count
+
+	# ZeroTier 启动后联网需要时间，每 2 秒检测一次，最多 10 次（共 20 秒）
+	zt_timeout=2
+	zt_count=0
+	zt_max=10
+
+	# 等待真实的 zt 网络设备就绪：$8 必须以 "zt" 开头才算有效设备名
+	# 未就绪时 $8 为 "-"，空值等意外值也一并过滤
+	while [ -z "$(zerotier-cli listnetworks 2>/dev/null | awk 'NR>1 && $8 ~ /^zt/ {print $8}')" ]; do
+		[ $zt_count -ge $zt_max ] && {
+			log "Timeout waiting for zt device after $((zt_timeout * zt_max))s"
+			return 1
+		}
+		zt_count=$((zt_count + 1))
+		sleep $zt_timeout
 	done
 
-	local zt_devs FW ip_segment
-
-	zt_devs="$(ifconfig | grep 'zt' | awk '{print $1}')"
+	zt_devs="$(zerotier-cli listnetworks 2>/dev/null | awk 'NR>1 && $8 ~ /^zt/ {print $8}')"
 
 	# Configure firewall using uci
 	uci -q delete firewall.zerotier
@@ -52,16 +65,24 @@ start() {
 		uci add_list firewall.zerotier.device="$i"
 	done
 	
-	# Add forwardings
+	# Add forwardings: zerotier <-> lan, zerotier -> wan
+	# zerotier -> lan: 让 zerotier 客户端访问局域网
+	# lan -> zerotier: 让局域网设备通过 zerotier 互访
+	# zerotier -> wan: 让 zerotier 客户端通过本机 WAN 上网（网关模式）
 	uci -q delete firewall.zerotier_lan
 	uci set firewall.zerotier_lan=forwarding
 	uci set firewall.zerotier_lan.src='zerotier'
 	uci set firewall.zerotier_lan.dest='lan'
-	
+
 	uci -q delete firewall.lan_zerotier
 	uci set firewall.lan_zerotier=forwarding
 	uci set firewall.lan_zerotier.src='lan'
 	uci set firewall.lan_zerotier.dest='zerotier'
+
+	uci -q delete firewall.zerotier_wan
+	uci set firewall.zerotier_wan=forwarding
+	uci set firewall.zerotier_wan.src='zerotier'
+	uci set firewall.zerotier_wan.dest='wan'
 	
 	uci commit firewall
 	/etc/init.d/firewall reload
@@ -69,18 +90,18 @@ start() {
 	log "Added uci firewall rules for ZeroTier interfaces"
 }
 
+reload_service() {
+	start
+}
+
 stop() {
-	local zt_devs FW ip_segment rule
-
-	zt_devs="$(ifconfig | grep 'zt' | awk '{print $1}')"
-	[ -z "${zt_devs}" ] && return 0
-
-	# Clean up uci firewall rules
+	# Clean up uci firewall rules (always delete, regardless of zt devices)
 	uci -q delete firewall.zerotier
-	uci -q delete firewall.zerotier_lan
 	uci -q delete firewall.lan_zerotier
+	uci -q delete firewall.zerotier_lan
+	uci -q delete firewall.zerotier_wan
 	uci commit firewall
 	/etc/init.d/firewall reload
-	
+
 	log "Removed uci firewall rules for ZeroTier"
 }

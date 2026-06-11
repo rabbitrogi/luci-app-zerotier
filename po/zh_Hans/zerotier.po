@@ -48,3 +48,111 @@ msgstr "本地配置文件"
 
 msgid "Path to the local.conf"
 msgstr "配置文件将映射到运行配置目录下的 local.conf，默认为空"
+
+msgid "Global Settings"
+msgstr "全局设置"
+
+msgid "Address"
+msgstr "地址"
+
+msgid "Network ID"
+msgstr "网络 ID"
+
+msgid "Name"
+msgstr "名称"
+
+msgid "Status"
+msgstr "状态"
+
+msgid "Device"
+msgstr "设备"
+
+msgid "IP Address"
+msgstr "IP 地址"
+
+msgid "Version"
+msgstr "版本"
+
+msgid "Role"
+msgstr "角色"
+
+msgid "Latency"
+msgstr "延迟"
+
+msgid "Link"
+msgstr "链路"
+
+msgid "Last TX"
+msgstr "最近发送"
+
+msgid "Last RX"
+msgstr "最近接收"
+
+msgid "Path"
+msgstr "路径"
+
+msgid "Networks"
+msgstr "网络"
+
+msgid "Peers"
+msgstr "节点"
+
+msgid "Ping All"
+msgstr "全部 Ping"
+
+msgid "Pinging..."
+msgstr "正在 Ping..."
+
+msgid "Online"
+msgstr "在线"
+
+msgid "RUNNING"
+msgstr "运行中"
+
+msgid "NOT RUNNING"
+msgstr "未运行"
+
+msgid "Collecting data..."
+msgstr "正在收集数据..."
+
+msgid "Collecting identity..."
+msgstr "正在获取地址..."
+
+msgid "Loading..."
+msgstr "加载中..."
+
+msgid "No networks joined"
+msgstr "未加入任何网络"
+
+msgid "No peers"
+msgstr "无节点"
+
+msgid "No IPs to ping"
+msgstr "没有可 Ping 的 IP"
+
+msgid "Error"
+msgstr "错误"
+
+msgid "Error loading networks"
+msgstr "加载网络信息失败"
+
+msgid "Error loading peers"
+msgstr "加载节点信息失败"
+
+msgid "Auto NAT: Enabled"
+msgstr "自动 NAT: 已启用"
+
+msgid "Auto NAT: Disabled"
+msgstr "自动 NAT: 已禁用"
+
+msgid "Service reload failed: "
+msgstr "服务重载失败: "
+
+msgid "Unknown error"
+msgstr "未知错误"
+
+msgid "Failed to reload service, please run manually: /etc/init.d/luci-zerotier reload"
+msgstr "服务重载失败，请手动执行: /etc/init.d/luci-zerotier reload"
+
+msgid "Path must be within /etc/zerotier, /var/lib/zerotier, or /tmp"
+msgstr "路径必须在 /etc/zerotier、/var/lib/zerotier 或 /tmp 目录下"
