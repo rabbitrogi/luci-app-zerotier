@@ -15,5 +15,14 @@ uci -q batch <<-EOF >/dev/null
 	commit firewall
 EOF
 
+# 确保 RPC 脚本有执行权限
+[ -f /usr/libexec/rpcd/luci-zerotier ] && chmod +x /usr/libexec/rpcd/luci-zerotier
+
+# 重启 rpcd 加载新的 RPC 方法
+[ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd restart
+
+# 重启 uhttpd 确保 LuCI 加载新文件
+[ -x /etc/init.d/uhttpd ] && /etc/init.d/uhttpd restart
+
 rm -f /tmp/luci-indexcache
 exit 0
