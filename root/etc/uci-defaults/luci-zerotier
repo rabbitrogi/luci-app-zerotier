@@ -15,13 +15,29 @@ uci -q batch <<-EOF >/dev/null
 	commit firewall
 EOF
 
-# 确保 RPC 脚本有执行权限
+# Set default persistent config path if not already configured
+if ! uci -q get zerotier.global.config_path >/dev/null; then
+    uci set zerotier.global.config_path='/etc/zerotier'
+    uci set zerotier.global.copy_config_path='1'
+    uci commit zerotier
+fi
+
+# Seed local.conf from template if neither exists
+if [ ! -f /etc/zerotier/local.conf ] && [ ! -f /etc/zerotier-one/local.conf ]; then
+    if [ -f /etc/zerotier/local.conf.template ]; then
+        # Strip JSON comments (lines starting with //) to create valid JSON
+        grep -v '^[[:space:]]*//' /etc/zerotier/local.conf.template | grep -v '^$' > /etc/zerotier/local.conf
+    fi
+fi
+
+# Set up periodic sync (every hour, saves runtime state to persistent storage)
+( crontab -l 2>/dev/null | grep -v 'zerotier-sync'; echo '0 * * * * /usr/bin/zerotier-sync.sh >/dev/null 2>&1' ) | crontab -
+
+# Ensure scripts have execute permissions
+chmod +x /usr/bin/zerotier-sync.sh 2>/dev/null
 [ -f /usr/libexec/rpcd/luci-zerotier ] && chmod +x /usr/libexec/rpcd/luci-zerotier
 
-# 重启 rpcd 加载新的 RPC 方法
 [ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd restart
-
-# 重启 uhttpd 确保 LuCI 加载新文件
 [ -x /etc/init.d/uhttpd ] && /etc/init.d/uhttpd restart
 
 rm -f /tmp/luci-indexcache

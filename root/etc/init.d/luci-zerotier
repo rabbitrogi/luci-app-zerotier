@@ -95,7 +95,8 @@ reload_service() {
 }
 
 stop() {
-	# Clean up uci firewall rules (always delete, regardless of zt devices)
+	/usr/bin/zerotier-sync.sh 2>/dev/null
+
 	uci -q delete firewall.zerotier
 	uci -q delete firewall.lan_zerotier
 	uci -q delete firewall.zerotier_lan
@@ -103,5 +104,5 @@ stop() {
 	uci commit firewall
 	/etc/init.d/firewall reload
 
-	log "Removed uci firewall rules for ZeroTier"
+	log "Synced config and removed uci firewall rules for ZeroTier"
 }
