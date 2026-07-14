@@ -84,9 +84,14 @@ return view.extend({
 												}
 												resultEl.appendChild(gridEl);
 											}
+									} else {
+										if (res && res.stderr === 'scan already in progress') {
+											statusEl.style.color = 'orange';
+											statusEl.textContent = _('Scan already in progress, please wait');
 										} else {
 											statusEl.textContent = res && res.stderr ? res.stderr : _('No IPs to ping');
 										}
+									}
 									}
 									if (btn) {
 										btn.disabled = false;

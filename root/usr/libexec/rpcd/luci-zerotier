@@ -134,9 +134,29 @@ case "$1" in
 			ping_networks)
 				json_init
 
+				# 并发锁：防止多个 ping_networks 同时执行（多标签页、ubus 直调等）。
+				# 锁文件写入 "$PID $TIMESTAMP"。双重校验：
+				#   1. PID 还活着（kill -0）——正常进程退出/SIGKILL 后失效
+				#   2. 锁年龄 < 120s——兜底 PID 复用误判（最差 MAX_RUNNING=16 扫 /23 约 70s）
+				LOCKFILE="/tmp/zt_ping.lock"
+				if [ -f "$LOCKFILE" ]; then
+					read -r _lp _lt < "$LOCKFILE" 2>/dev/null
+					_now=$(date +%s)
+					_la=$((_now - ${_lt:-0}))
+					if [ -n "$_lp" ] && kill -0 "$_lp" 2>/dev/null && [ "$_la" -lt 120 ]; then
+						json_add_int "code" 1
+						json_add_string "result" ""
+						json_add_string "stderr" "scan already in progress"
+						json_dump
+						return
+					fi
+					rm -f "$LOCKFILE"
+				fi
+				echo "$$ $(date +%s)" > "$LOCKFILE"
+
 				tmpfile=$(mktemp /tmp/zt_ping_XXXXXX)
 				_sem=""
-				trap 'rm -f "$tmpfile" "$_sem"; exec 9>&- 2>/dev/null' EXIT INT TERM
+				trap 'rm -f "$tmpfile" "$_sem" "$LOCKFILE"; exec 9>&- 2>/dev/null' EXIT INT TERM
 				rm -f "$tmpfile"
 
 				if ! command -v ping >/dev/null 2>&1; then

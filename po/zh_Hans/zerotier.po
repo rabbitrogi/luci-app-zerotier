@@ -159,3 +159,6 @@ msgstr "路径必须在 /etc/zerotier、/var/lib/zerotier 或 /tmp 目录下"
 
 msgid "Network ID must be 16 hex characters (0-9, a-f)"
 msgstr "网络 ID 必须是 16 位十六进制字符（0-9, a-f）"
+
+msgid "Scan already in progress, please wait"
+msgstr "扫描正在进行中，请等待完成"
