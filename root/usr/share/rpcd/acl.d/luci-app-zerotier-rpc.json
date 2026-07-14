@@ -1,5 +1,5 @@
 {
-	"luci-app-zerotier": {
+	"luci-app-zerotier-rpc": {
 		"description": "Grant access to luci-zerotier RPC methods - Security hardened",
 		"read": {
 			"ubus": {

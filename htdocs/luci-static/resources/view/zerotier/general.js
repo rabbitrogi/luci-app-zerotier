@@ -16,6 +16,16 @@ var callLuciZerotierIdentity = rpc.declare({
 	method: 'get_identity'
 });
 
+// Mask all but the first 4 and last 4 chars of a secret for display.
+// Used for the `secret` field so the value reaching the browser cannot
+// be directly exfiltrated, while still giving the user a visual cue that
+// a secret is configured and roughly what it looks like.
+var maskSecret = function(s) {
+	if (!s) return '';
+	if (s.length <= 8) return '••••••••';
+	return s.substring(0, 4) + '••••••••' + s.substring(s.length - 4);
+};
+
 return view.extend({
 	load: function() {
 		return Promise.all([
@@ -96,8 +106,19 @@ return view.extend({
 		o.datatype = 'port';
 
 		o = s.taboption('more', form.TextValue, 'secret', _('Secret'));
-		o.description = _('Secret of zerotier client');
+		o.description = _('Secret of zerotier client. Displayed masked for security; clear the field and paste a new identity.secret to replace it.');
 		o.rows = 3;
+		o.cfgvalue = function(section_id) {
+			var val = uci.get('zerotier', section_id, 'secret');
+			return val ? maskSecret(val) : '';
+		};
+		o.write = function(section_id, formvalue) {
+			var current = uci.get('zerotier', section_id, 'secret');
+			if (!formvalue || (current && formvalue === maskSecret(current))) {
+				return;
+			}
+			uci.set('zerotier', section_id, 'secret', formvalue);
+		};
 
 		o = s.taboption('more', form.Value, 'local_conf', _('Local configuration'));
 		o.description = _('Path to the local.conf');
@@ -132,6 +153,12 @@ return view.extend({
 
 		o = s.option(form.Value, 'id', _('Network ID'));
 		o.rmempty = false;
+		o.validate = function(section_id, value) {
+			if (value && !/^[0-9a-fA-F]{16}$/.test(value)) {
+				return _('Network ID must be 16 hex characters (0-9, a-f)');
+			}
+			return true;
+		};
 
 		o = s.option(form.Flag, 'allow_managed', _('Allow Managed'));
 		o.default = '1';
