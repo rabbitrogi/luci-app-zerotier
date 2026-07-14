@@ -118,74 +118,60 @@ return view.extend({
 			])
 		]);
 
-		var parseNetworks = function(rawOutput) {
-			if (!rawOutput || typeof rawOutput !== 'string') {
+		var parseNetworks = function(jsonStr) {
+			if (!jsonStr || typeof jsonStr !== 'string') return [];
+			try {
+				var arr = JSON.parse(jsonStr);
+				if (!Array.isArray(arr)) return [];
+				return arr.map(function(net) {
+					return {
+						nwid: net.nwid || net.id || '-',
+						name: net.name || '-',
+						mac: net.mac || '-',
+						status: net.status || '-',
+						type: net.type || '-',
+						dev: net.portDeviceName || '-',
+						ips: (net.assignedAddresses || []).join(' ') || '-'
+					};
+				});
+			} catch(e) {
 				return [];
 			}
-
-			var lines = rawOutput.trim().split('\n');
-			var networks = [];
-
-			for (var i = 1; i < lines.length; i++) {
-				var line = lines[i].trim();
-				if (!line) {
-					continue;
-				}
-
-				var parts = line.split(/\s+/);
-				if (parts.length >= 9) {
-					networks.push({
-						nwid: parts[2] || '',
-						name: parts[3] || '',
-						mac: parts[4] || '',
-						status: parts[5] || '',
-						type: parts[6] || '',
-						dev: parts[7] || '',
-						ips: parts.slice(8).join(' ')
-					});
-				}
-			}
-			return networks;
 		};
 
-		var parsePeers = function(rawOutput) {
-			if (!rawOutput || typeof rawOutput !== 'string') {
+		var parsePeers = function(jsonStr) {
+			if (!jsonStr || typeof jsonStr !== 'string') return [];
+			try {
+				var arr = JSON.parse(jsonStr);
+				if (!Array.isArray(arr)) return [];
+				return arr.map(function(peer) {
+					var path = '-';
+					var link = '-';
+					if (peer.paths && peer.paths.length > 0) {
+						for (var i = 0; i < peer.paths.length; i++) {
+							if (peer.paths[i].active) {
+								path = peer.paths[i].address || '-';
+								break;
+							}
+						}
+					}
+					if (peer.tunneled) {
+						link = 'RELAY';
+					} else if (path !== '-') {
+						link = 'DIRECT';
+					}
+					return {
+						ztaddr: peer.address || '-',
+						version: peer.version || '-',
+						role: peer.role || '-',
+						latency: (peer.latency != null && peer.latency >= 0) ? String(peer.latency) : '-',
+						link: link,
+						path: path
+					};
+				});
+			} catch(e) {
 				return [];
 			}
-
-			var lines = rawOutput.trim().split('\n');
-			var peers = [];
-
-			for (var i = 1; i < lines.length; i++) {
-				var line = lines[i].trim();
-
-				if (!line) {
-					continue;
-				}
-
-				if (line.indexOf('NOTE:') === 0 || line.indexOf('<') >= 0) {
-					continue;
-				}
-
-				if (!/^[0-9a-f]{10}\s/.test(line)) {
-					continue;
-				}
-
-				var parts = line.split(/\s+/);
-				if (parts.length >= 6) {
-					peers.push({
-						ztaddr: parts[0] || '',
-						version: parts[1] || '-',
-						role: parts[2] || '-',
-						latency: parts[3] || '-',
-						link: parts[4] || '-',
-						lastTX: parts[5] || '-',
-						lastRX: parts[6] || '-',
-						path: parts.slice(7).join(' ') || '-'
-					});
-				}
-			}
-			return peers;
 		};
 
 		var getStatusColor = function(status) {
@@ -296,7 +282,7 @@ return view.extend({
 			});
 
 			var header = E('tr', { class: 'cbi-section-table-titles' });
-			var headers = [_('Address'), _('Version'), _('Role'), _('Latency'), _('Link'), _('Last TX'), _('Last RX'), _('Path')];
+			var headers = [_('Address'), _('Version'), _('Role'), _('Latency'), _('Link'), _('Path')];
 			for (var h = 0; h < headers.length; h++) {
 				header.appendChild(E('th', { style: 'text-align: left; padding: 4px;' }, [headers[h]]));
 			}
@@ -322,8 +308,6 @@ return view.extend({
 				linkTd.appendChild(E('span', { style: 'color: ' + getLinkColor(peer.link) }, [peer.link || '-']));
 				row.appendChild(linkTd);
 
-				row.appendChild(E('td', { style: 'text-align: left; padding: 4px;' }, [peer.lastTX || '-']));
-				row.appendChild(E('td', { style: 'text-align: left; padding: 4px;' }, [peer.lastRX || '-']));
 				row.appendChild(E('td', { style: 'text-align: left; padding: 4px; font-family: monospace; font-size: 11px;' }, [peer.path || '-']));
 
 				table.appendChild(row);

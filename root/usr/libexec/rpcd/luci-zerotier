@@ -68,11 +68,11 @@ case "$1" in
 				json_dump
 				;;
 			get_networks)
-				# Get ZeroTier network status - SAFE: read-only operation
+				# Get ZeroTier network status as JSON - SAFE: read-only operation
 				json_init
 
 				if command -v zerotier-cli >/dev/null 2>&1; then
-					networks_output=$(zerotier-cli listnetworks 2>&1)
+					networks_output=$(zerotier-cli -j listnetworks 2>/dev/null)
 					exit_code=$?
 
 					json_add_int "code" "$exit_code"
@@ -87,42 +87,37 @@ case "$1" in
 				json_dump
 				;;
 			get_identity)
-				# Get ZeroTier node identity (address) - SAFE: read-only operation
+				# Get ZeroTier node identity (address) via JSON - SAFE: read-only operation
 				json_init
 
 				if command -v zerotier-cli >/dev/null 2>&1; then
-					info_output=$(zerotier-cli info 2>&1)
+					info_json=$(zerotier-cli -j info 2>/dev/null)
 					exit_code=$?
 
-					if [ "$exit_code" -eq 0 ]; then
-						# Parse identity from "200 info <address> <timestamp> <level>"
-						identity=$(echo "$info_output" | awk 'NR==1 {print $3}')
-						json_add_int "code" "0"
+					if [ "$exit_code" -eq 0 ] && [ -n "$info_json" ]; then
+						identity=$(echo "$info_json" | jsonfilter -e '@.address' 2>/dev/null)
+						json_add_int "code" 0
 						json_add_string "identity" "$identity"
-						json_add_string "raw" "$info_output"
 						json_add_string "stderr" ""
 					else
 						json_add_int "code" "$exit_code"
 						json_add_string "identity" ""
-						json_add_string "raw" "$info_output"
-						json_add_string "stderr" ""
+						json_add_string "stderr" "zerotier-cli info failed"
 					fi
-
 				else
 					json_add_int "code" 1
 					json_add_string "identity" ""
-					json_add_string "raw" ""
 					json_add_string "stderr" "zerotier-cli not found"
 				fi
 
 				json_dump
 				;;
 			get_peers)
-				# Get ZeroTier peers - SAFE: read-only operation
+				# Get ZeroTier peers as JSON - SAFE: read-only operation
 				json_init
 
 				if command -v zerotier-cli >/dev/null 2>&1; then
-					peers_output=$(zerotier-cli peers 2>&1)
+					peers_output=$(zerotier-cli -j listpeers 2>/dev/null)
 					exit_code=$?
 
 					json_add_int "code" "$exit_code"
@@ -140,7 +135,8 @@ case "$1" in
 				json_init
 
 				tmpfile=$(mktemp /tmp/zt_ping_XXXXXX)
-				trap 'rm -f "$tmpfile"' EXIT INT TERM
+				_sem=""
+				trap 'rm -f "$tmpfile" "$_sem"; exec 9>&- 2>/dev/null' EXIT INT TERM
 				rm -f "$tmpfile"
 
 				if ! command -v ping >/dev/null 2>&1; then
@@ -159,77 +155,127 @@ case "$1" in
 					return
 				fi
 
-				output=$(zerotier-cli listnetworks 2>&1)
-				if [ $? -ne 0 ]; then
+				# Extract assigned IP addresses via JSON output (reliable field names
+				# instead of fragile column-position parsing of text output)
+				ip_list=$(zerotier-cli -j listnetworks 2>/dev/null | jsonfilter -e '$[*].assignedAddresses[*]' 2>/dev/null)
+				if [ -z "$ip_list" ]; then
 					json_add_int "code" 1
 					json_add_string "result" ""
-					json_add_string "stderr" "zerotier-cli failed"
+					json_add_string "stderr" "no assigned addresses or zerotier-cli failed"
 					json_dump
 					return
 				fi
 
-				# 用 here-doc 替代管道，确保 while 循环在当前 shell 运行
-				# 这样 wait 才能正确等待后台 ping 进程
-				while IFS= read -r line; do
-					set -- $line
-					if [ $# -ge 9 ]; then
-						for ip_cidr in $(echo "$9" | tr ',' ' '); do
-							case "$ip_cidr" in
-								*.*.*.*/*)
-									ip=${ip_cidr%%/*}
-									cidr=${ip_cidr##*/}
-									if ! echo "$ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
-										continue
-									fi
-									if [ "$cidr" -lt 1 ] || [ "$cidr" -gt 32 ]; then
-										continue
-									fi
-									_oldIFS="$IFS"
-									IFS='.'
-									set -- $ip
-									i1="$1"; i2="$2"; i3="$3"; i4="$4"
-									IFS="$_oldIFS"
-									if [ "$cidr" -le 24 ] && [ "$cidr" -ge 23 ]; then
-										if [ "$cidr" = "23" ]; then
-											base_i3=$((i3 & ~1))
-											for j in $(seq 0 255); do
-												( ping -c 2 -W 1 "$i1.$i2.$base_i3.$j" >/dev/null 2>&1 && echo "OK:$i1.$i2.$base_i3.$j" || echo "FAIL:$i1.$i2.$base_i3.$j" ) >> "$tmpfile" 2>&1 &
-											done
-											_base_i3=$((base_i3 + 1))
-											for j in $(seq 0 255); do
-												( ping -c 2 -W 1 "$i1.$i2.$_base_i3.$j" >/dev/null 2>&1 && echo "OK:$i1.$i2.$_base_i3.$j" || echo "FAIL:$i1.$i2.$_base_i3.$j" ) >> "$tmpfile" 2>&1 &
-											done
-										else
-											for j in $(seq 0 255); do
-												( ping -c 2 -W 1 "$i1.$i2.$i3.$j" >/dev/null 2>&1 && echo "OK:$i1.$i2.$i3.$j" || echo "FAIL:$i1.$i2.$i3.$j" ) >> "$tmpfile" 2>&1 &
-											done
-										fi
-									elif [ "$cidr" -lt 23 ]; then
-										for j in $(seq 0 255); do
-											( ping -c 2 -W 1 "$i1.$i2.$i3.$j" >/dev/null 2>&1 && echo "OK:$i1.$i2.$i3.$j" || echo "FAIL:$i1.$i2.$i3.$j" ) >> "$tmpfile" 2>&1 &
-										done
-									else
-										shifts=$((32 - cidr))
-										host_count=1
-										while [ "$shifts" -gt 0 ]; do
-											host_count=$((host_count * 2))
-											shifts=$((shifts - 1))
-										done
-										net_mask=$((256 - host_count))
-										net_addr=$((i4 & net_mask))
-										for j in $(seq "$net_addr" "$((net_addr + host_count - 1))"); do
-											( ping -c 2 -W 1 "$i1.$i2.$i3.$j" >/dev/null 2>&1 && echo "OK:$i1.$i2.$i3.$j" || echo "FAIL:$i1.$i2.$i3.$j" ) >> "$tmpfile" 2>&1 &
-										done
-									fi
-									;;
-							esac
-						done
-					fi
-				done <<EOF
-$(echo "$output" | awk 'NR>1')
-EOF
+				# 并发限流：FIFO 信号量模式。
+				# 预先向命名管道写入 MAX_RUNNING 个 token（换行符）；ping_one() 每次
+				# read -u 9 消费一个 token（管道空时自动阻塞，不消耗 CPU）；后台子 shell
+				# 在 ping 结束后 echo >&9 归还 token。
+				#
+				# 效果：始终精确保持 MAX_RUNNING 个并发 ping。一个快 ping（100ms 完成）
+				# 立刻让出 slot 给下一个 IP，不像 batch 模式那样要等齐一批里最慢的那个。
+				#
+				# 依赖 busybox ash 的 read 逐字节语义（不越过换行符吞掉多个 token）。
+				# OpenWrt 的 /bin/sh 永远是 busybox ash，所以保证可用。
+				# 不依赖 usleep / sleep 分数延时 / xargs -P（这些在 stock OpenWrt
+				# busybox 默认配置下均不可用）。
+				#
+				# MAX_RUNNING 自适应：根据当前可用内存动态计算。
+				# 实测每个 ping slot（subshell + ping 进程）并发时占 ~150 kB RSS
+				# （共享文本段 + COW 后的实际物理内存）。按 300 kB/slot（2x 安全余量）、
+				# 仅使用 1/3 可用内存计算，范围 [16, 512]。
+				_avail_kb=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null)
+				if [ -n "$_avail_kb" ] && [ "$_avail_kb" -gt 0 ]; then
+					MAX_RUNNING=$((_avail_kb / 3 / 300))
+					[ "$MAX_RUNNING" -lt 16 ] && MAX_RUNNING=16
+					[ "$MAX_RUNNING" -gt 512 ] && MAX_RUNNING=512
+				else
+					MAX_RUNNING=64
+				fi
+				_sem=$(mktemp -u /tmp/zt_ping_sem_XXXXXX)
+				if mkfifo "$_sem" 2>/dev/null; then
+					exec 9<>"$_sem"
+					_i=0
+					while [ "$_i" -lt "$MAX_RUNNING" ]; do
+						echo >&9
+						_i=$((_i + 1))
+					done
+					ping_one() {
+						read -u 9 2>/dev/null
+						(
+							ping -c 2 -W 1 "$1" >/dev/null 2>&1 && echo "OK:$1" || echo "FAIL:$1"
+							echo >&9 2>/dev/null
+						) >> "$tmpfile" 2>&1 &
+					}
+				else
+					rm -f "$_sem" 2>/dev/null; _sem=""
+					ping_one() {
+						( ping -c 2 -W 1 "$1" >/dev/null 2>&1 && echo "OK:$1" || echo "FAIL:$1" ) >> "$tmpfile" 2>&1 &
+					}
+				fi
+
+				# 设计说明：扫描器覆盖典型 ZeroTier 部署场景（/24 ~ /23，最多 512 个主机）。
+				# 对于更大的网段（/22、/21、/16 等），仅扫描当前 IP 所在的 /24，因为：
+				#   - /23 已覆盖普通用户使用 zerotier 的实际上限
+				#   - 扫描 /22+（1024+ 个 IP）对常规连通性检查属于过度操作
+				#   - 大网段用户应改用专门的扫描工具（nmap 等）
+				for ip_cidr in $ip_list; do
+					case "$ip_cidr" in
+						*.*.*.*/*)
+							ip=${ip_cidr%%/*}
+							cidr=${ip_cidr##*/}
+							if ! echo "$ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+								continue
+							fi
+							if [ "$cidr" -lt 1 ] || [ "$cidr" -gt 32 ]; then
+								continue
+							fi
+							_oldIFS="$IFS"
+							IFS='.'
+							set -- $ip
+							i1="$1"; i2="$2"; i3="$3"; i4="$4"
+							IFS="$_oldIFS"
+							if [ "$cidr" -le 24 ] && [ "$cidr" -ge 23 ]; then
+								if [ "$cidr" = "23" ]; then
+									base_i3=$((i3 & ~1))
+									for j in $(seq 0 255); do
+										ping_one "$i1.$i2.$base_i3.$j"
+									done
+									_base_i3=$((base_i3 + 1))
+									for j in $(seq 0 255); do
+										ping_one "$i1.$i2.$_base_i3.$j"
+									done
+								else
+									for j in $(seq 0 255); do
+										ping_one "$i1.$i2.$i3.$j"
+									done
+								fi
+							elif [ "$cidr" -lt 23 ]; then
+								# 大网段（/22、/21、/16...）只扫描当前所在 /24，详见上方设计说明
+								for j in $(seq 0 255); do
+									ping_one "$i1.$i2.$i3.$j"
+								done
+							else
+								shifts=$((32 - cidr))
+								host_count=1
+								while [ "$shifts" -gt 0 ]; do
+									host_count=$((host_count * 2))
+									shifts=$((shifts - 1))
+								done
+								net_mask=$((256 - host_count))
+								net_addr=$((i4 & net_mask))
+								for j in $(seq "$net_addr" "$((net_addr + host_count - 1))"); do
+									ping_one "$i1.$i2.$i3.$j"
+								done
+							fi
+							;;
+					esac
+				done
 
 				wait
+
+				# Release semaphore fd and clean up
+				[ -n "$_sem" ] && exec 9>&- 2>/dev/null
+				rm -f "$_sem" 2>/dev/null
 
 				if [ -f "$tmpfile" ]; then
 					result=$(sort -u "$tmpfile" | tr '\n' '|')
