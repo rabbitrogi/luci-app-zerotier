@@ -14,11 +14,29 @@ log() {
 	logger -t luci-zerotier "$@" # debug
 }
 
+validate_path() {
+	case "$1" in
+		/etc/zerotier|/etc/zerotier/*|/var/lib/zerotier|/var/lib/zerotier/*|/tmp|/tmp/*)
+			return 0
+			;;
+		*)
+			log "Invalid path rejected: $1"
+			return 1
+			;;
+	esac
+}
+
 start() {
 	config_load zerotier
 	config_foreach get_config zerotier
 
 	[ "$enabled" -eq 0 ] && log "Service disabled in config." && return 0
+
+	# Server-side path validation (defense-in-depth, mirrors general.js regex)
+	_local_conf=$(uci -q get zerotier.global.local_conf 2>/dev/null)
+	_config_path=$(uci -q get zerotier.global.config_path 2>/dev/null)
+	[ -n "$_local_conf" ] && { validate_path "$_local_conf" || return 1; }
+	[ -n "$_config_path" ] && { validate_path "$_config_path" || return 1; }
 
 	if ! $PROG running 2>/dev/null; then
 		log "ZeroTier service is not running!"
@@ -39,9 +57,9 @@ start() {
 	zt_count=0
 	zt_max=10
 
-	# 等待真实的 zt 网络设备就绪：$8 必须以 "zt" 开头才算有效设备名
-	# 未就绪时 $8 为 "-"，空值等意外值也一并过滤
-	while [ -z "$(zerotier-cli listnetworks 2>/dev/null | awk 'NR>1 && $8 ~ /^zt/ {print $8}')" ]; do
+	# 等待真实的 zt 网络设备就绪：通过 JSON 输出提取 portDeviceName
+	# 只接受以 "zt" 开头的设备名，过滤掉未就绪时的 null/"-" 等值
+	while [ -z "$(zerotier-cli -j listnetworks 2>/dev/null | jsonfilter -e '$[*].portDeviceName' 2>/dev/null | grep '^zt')" ]; do
 		[ $zt_count -ge $zt_max ] && {
 			log "Timeout waiting for zt device after $((zt_timeout * zt_max))s"
 			return 1
@@ -50,7 +68,7 @@ start() {
 		sleep $zt_timeout
 	done
 
-	zt_devs="$(zerotier-cli listnetworks 2>/dev/null | awk 'NR>1 && $8 ~ /^zt/ {print $8}')"
+	zt_devs="$(zerotier-cli -j listnetworks 2>/dev/null | jsonfilter -e '$[*].portDeviceName' 2>/dev/null | grep '^zt')"
 
 	# Configure firewall using uci
 	uci -q delete firewall.zerotier
