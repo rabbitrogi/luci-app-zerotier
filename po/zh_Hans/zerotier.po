@@ -28,8 +28,8 @@ msgstr "ZeroTier 运行端口，默认是 9993"
 msgid "Secret"
 msgstr "节点密钥"
 
-msgid "Secret of zerotier client"
-msgstr "密钥对应节点ID，留空会自动创建，谨慎修改"
+msgid "Secret of zerotier client. Displayed masked for security; clear the field and paste a new identity.secret to replace it."
+msgstr "客户端密钥（identity.secret）。为安全起见显示为掩码；如需更换，请清空输入框后粘贴新的密钥。"
 
 msgid "Configuration folder"
 msgstr "运行配置目录"
@@ -156,3 +156,6 @@ msgstr "服务重载失败，请手动执行: /etc/init.d/luci-zerotier reload"
 
 msgid "Path must be within /etc/zerotier, /var/lib/zerotier, or /tmp"
 msgstr "路径必须在 /etc/zerotier、/var/lib/zerotier 或 /tmp 目录下"
+
+msgid "Network ID must be 16 hex characters (0-9, a-f)"
+msgstr "网络 ID 必须是 16 位十六进制字符（0-9, a-f）"
