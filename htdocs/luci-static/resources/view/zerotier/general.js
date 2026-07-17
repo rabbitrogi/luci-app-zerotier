@@ -16,6 +16,11 @@ var callLuciZerotierIdentity = rpc.declare({
 	method: 'get_identity'
 });
 
+var callLuciZerotierReload = rpc.declare({
+	object: 'luci-zerotier',
+	method: 'reload'
+});
+
 // Mask all but the first 4 and last 4 chars of a secret for display.
 // Used for the `secret` field so the value reaching the browser cannot
 // be directly exfiltrated, while still giving the user a visual cue that
@@ -38,33 +43,6 @@ return view.extend({
 
 		m = new form.Map('zerotier', _('ZeroTier'),
 			_('Zerotier is an open source, cross-platform and easy to use virtual LAN'));
-
-		var originalSave = m.save.bind(m);
-		m.save = function() {
-			return originalSave().then(function(result) {
-				var luciZerotierRpc = rpc.declare({
-					object: 'luci-zerotier',
-					method: 'reload'
-				});
-
-				L.resolveDefault(luciZerotierRpc(), {})
-				.then(function(reloadResult) {
-					if (reloadResult && reloadResult.code === 0) {
-						var natValue = uci.get('zerotier', 'global', 'nat') || '0';
-						var natMsg = natValue === '1' ? _('Auto NAT: Enabled') : _('Auto NAT: Disabled');
-						ui.addNotification(null, E('p', natMsg), 'info');
-					} else {
-						var errorMsg = reloadResult && reloadResult.stderr ? reloadResult.stderr : _('Unknown error');
-						ui.addNotification(null, E('p', _('Service reload failed: ') + errorMsg), 'warning');
-					}
-				})
-				.catch(function(error) {
-					ui.addNotification(null, E('p', _('Failed to reload service, please run manually: /etc/init.d/luci-zerotier reload')), 'warning');
-				});
-
-				return result;
-			});
-		};
 
 		// Global settings section
 		s = m.section(form.NamedSection, 'global', 'zerotier', _('Global Settings'));
@@ -254,8 +232,25 @@ return view.extend({
 	},
 
 	handleSaveApply: function(ev, mode) {
+		// Reload the service only AFTER the apply has committed the staged
+		// configuration: Map.save() alone merely writes to the ubus session
+		// delta, so reloading earlier would read the previous config (and the
+		// notification would describe a state that is not in effect yet).
 		return this.handleSave(ev).then(function() {
 			return ui.changes.apply(mode == '0');
+		}).then(function() {
+			return L.resolveDefault(callLuciZerotierReload(), {});
+		}).then(function(reloadResult) {
+			if (reloadResult && reloadResult.code === 0) {
+				var natValue = uci.get('zerotier', 'global', 'nat') || '0';
+				var natMsg = natValue === '1' ? _('Auto NAT: Enabled') : _('Auto NAT: Disabled');
+				ui.addNotification(null, E('p', natMsg), 'info');
+			} else {
+				var errorMsg = reloadResult && reloadResult.stderr ? reloadResult.stderr : _('Unknown error');
+				ui.addNotification(null, E('p', _('Service reload failed: ') + errorMsg), 'warning');
+			}
+		}).catch(function(error) {
+			ui.addNotification(null, E('p', _('Failed to reload service, please run manually: /etc/init.d/luci-zerotier reload')), 'warning');
 		});
 	},
 

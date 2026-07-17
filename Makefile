@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-zerotier
 PKG_VERSION:=2.2
-PKG_RELEASE:=23
+PKG_RELEASE:=24
 PKG_LICENSE:=Apache-2.0
 
 LUCI_TITLE:=LuCI for ZeroTier

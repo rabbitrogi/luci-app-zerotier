@@ -44,7 +44,7 @@ return view.extend({
 							var resultEl = document.getElementById('zt_ping_result');
 							if (btn && !btn.disabled) {
 								btn.disabled = true;
-								btn.value = _('Pinging...');
+								btn.textContent = _('Pinging...');
 								if (statusEl) {
 									statusEl.textContent = '';
 								}
@@ -67,9 +67,10 @@ return view.extend({
 													displayLines.push(line.substring(3));
 												}
 											}
-											statusEl.style.color = 'green';
-											statusEl.textContent = _('Online') + ': ' + okCount;
+										statusEl.style.color = okCount > 0 ? 'green' : 'orange';
+										statusEl.textContent = _('Online') + ': ' + okCount;
 
+										if (resultEl) {
 											while (resultEl.firstChild) {
 												resultEl.removeChild(resultEl.firstChild);
 											}
@@ -84,6 +85,7 @@ return view.extend({
 												}
 												resultEl.appendChild(gridEl);
 											}
+										}
 									} else {
 										if (res && res.stderr === 'scan already in progress') {
 											statusEl.style.color = 'orange';
@@ -93,19 +95,19 @@ return view.extend({
 										}
 									}
 									}
-									if (btn) {
-										btn.disabled = false;
-										btn.value = _('Ping All');
-									}
-								}).catch(function(err) {
-									if (statusEl) {
-										statusEl.textContent = _('Error');
-									}
-									if (btn) {
-										btn.disabled = false;
-										btn.value = _('Ping All');
-									}
-								});
+								if (btn) {
+									btn.disabled = false;
+									btn.textContent = _('Ping All');
+								}
+							}).catch(function(err) {
+								if (statusEl) {
+									statusEl.textContent = _('Error');
+								}
+								if (btn) {
+									btn.disabled = false;
+									btn.textContent = _('Ping All');
+								}
+							});
 							}
 						}
 					}, [_('Ping All')]),

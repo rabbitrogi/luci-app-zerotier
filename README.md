@@ -22,7 +22,7 @@ The custom `luci-zerotier` RPC object provides these methods (no `luci.exec` nee
 | `status` | read | Service running state, NAT setting, firewall rule count |
 | `get_networks` | read | `zerotier-cli listnetworks` output |
 | `get_identity` | read | Node address from `zerotier-cli info` |
-| `get_peers` | read | `zerotier-cli peers` output |
+| `get_peers` | read | `zerotier-cli listpeers` output |
 | `ping_networks` | read | Concurrent ping scan of all assigned IP subnets |
 | `reload` | write | Reload firewall rules via `/etc/init.d/luci-zerotier reload` |
 | `restart_service` | write | Restart the zerotier daemon |
@@ -71,7 +71,25 @@ writes, no firewall reload).
 
 ## Changelog
 
-### v2.2-r23 (current)
+### v2.2-r24 (current)
+
+**Bug fixes**
+- `general.js`: the service reload now runs **after** `ui.changes.apply()` has
+  committed the configuration. Previously a custom `m.save` hook reloaded right
+  after `Map.save()` — which only stages changes into the ubus session — so the
+  init script read the *previous* committed config while the notification showed
+  the not-yet-applied value. Reloading is effectively free now: r23's idempotent
+  `start()` makes it a no-op when rules are already in place.
+- `info.js`: the Ping button label now updates via `textContent` — `E('button')`
+  creates a `<button>` element, so setting `.value` had no visual effect and
+  "Pinging..." was never displayed. Added the missing `resultEl` null guard, and
+  an all-offline result (`Online: 0`) now renders orange instead of green.
+
+**Housekeeping**
+- README: `get_peers` description corrected to `zerotier-cli listpeers`.
+- Removed the stray empty `root/etc/zerotier/zerotier.log` from the package.
+
+### v2.2-r23
 
 **Firewall rework (reproduced and verified on OpenWrt 24.10.7 / fw4-2024.12.18)**
 
