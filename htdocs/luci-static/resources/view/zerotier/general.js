@@ -120,12 +120,14 @@ return view.extend({
 			uci.set('zerotier', section_id, 'secret', formvalue);
 		};
 
-		o = s.taboption('more', form.Value, 'local_conf', _('Local configuration'));
+		o = s.taboption('more', form.Value, 'local_conf_path', _('Local configuration'));
 		o.description = _('Path to the local.conf');
 		o.placeholder = '/etc/zerotier.conf';
 		o.validate = function(section_id, value) {
 			if (!value) return true;
-			if (!value.match(/^(\/etc\/zerotier|\/var\/lib\/zerotier|\/tmp)(\/|$)/)) {
+			// /etc/zerotier.conf is the upstream zerotier package's conventional
+			// single-file location (see the commented option in its stock config)
+			if (!value.match(/^(\/etc\/zerotier\.conf|\/etc\/zerotier|\/var\/lib\/zerotier|\/tmp)(\/|$)/)) {
 				return _('Path must be within /etc/zerotier, /var/lib/zerotier, or /tmp');
 			}
 			return true;

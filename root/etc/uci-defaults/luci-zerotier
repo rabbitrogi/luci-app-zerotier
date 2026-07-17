@@ -1,22 +1,33 @@
 #!/bin/sh
 
-# ucitrack 只对非 PROCD 程序有效
-# NOTE: 注册 firewall include 时使用独立的名字 `firewall.zerotier_include`，
-# 不能用 `firewall.zerotier`，否则 init.d/luci-zerotier 在创建 zone 时会
-# `uci -q delete firewall.zerotier` 把 include 自己删掉（include 与 zone 同名冲突）。
-uci -q batch <<-EOF >/dev/null
-	delete ucitrack.@zerotier[-1]
-	add ucitrack zerotier
-	set ucitrack.@zerotier[-1].init='luci-zerotier'
-	commit ucitrack
+# Migrate the misnamed option written by <= r22: the LuCI form stored the
+# local.conf path in `zerotier.global.local_conf`, but the zerotier package
+# init script only honors `local_conf_path` — the old value was silently
+# ignored. Rename it (keeping an explicitly set new value if both exist).
+_old_lc=$(uci -q get zerotier.global.local_conf)
+if [ -n "$_old_lc" ]; then
+    if [ -z "$(uci -q get zerotier.global.local_conf_path)" ]; then
+        uci set zerotier.global.local_conf_path="$_old_lc"
+    fi
+    uci delete zerotier.global.local_conf
+    uci commit zerotier
+fi
 
-	delete firewall.zerotier_include
-	set firewall.zerotier_include=include
-	set firewall.zerotier_include.type=script
-	set firewall.zerotier_include.path='/usr/share/zerotier/firewall.include'
-	set firewall.zerotier_include.reload=1
-	commit firewall
-EOF
+# NOTE: reload-on-apply is handled by /usr/share/ucitrack/luci-app-zerotier.json
+# (procd config trigger -> /etc/init.d/luci-zerotier reload). The old uci-based
+# ucitrack registration (`uci add ucitrack ...`) is obsolete: modern ucitrack
+# only reads /usr/share/ucitrack/*.json, and `uci add` fails on systems where
+# /etc/config/ucitrack does not exist.
+
+# r23 removed the firewall include entirely: the zone now matches devices via
+# the 'zt+' glob, which fw4 renders as an nftables wildcard — nothing needs to
+# be re-run on firewall reloads. (The old include restarted this service, which
+# re-entered fw4's locked section and deadlocked; see README r23 changelog.)
+# Clean up its registration here, including the pre-r22 legacy name collision
+# where the include was registered as `firewall.zerotier` (type=include).
+uci -q delete firewall.zerotier_include
+[ "$(uci -q get firewall.zerotier)" = "include" ] && uci -q delete firewall.zerotier
+uci commit firewall
 
 # Set default persistent config path if not already configured
 if ! uci -q get zerotier.global.config_path >/dev/null; then
@@ -33,15 +44,24 @@ if [ ! -f /etc/zerotier/local.conf ] && [ ! -f /etc/zerotier-one/local.conf ]; t
     fi
 fi
 
-# Set up periodic sync (every hour, saves runtime state to persistent storage)
+# Set up periodic sync (every hour, saves runtime state to persistent storage).
+# NOTE: init.d/luci-zerotier start() re-asserts this entry, because restoring
+# a config backup wipes the crontab while uci-defaults only run once.
 ( crontab -l 2>/dev/null | grep -v 'zerotier-sync'; echo '0 * * * * /usr/bin/zerotier-sync.sh >/dev/null 2>&1' ) | crontab -
 
 # Ensure scripts have execute permissions
-# firewall.include MUST be executable: fw3 invokes include scripts via execve()
-# when type=script and reload=1; without +x the include is silently skipped.
 chmod +x /usr/bin/zerotier-sync.sh 2>/dev/null
-chmod +x /usr/share/zerotier/firewall.include 2>/dev/null
 [ -f /usr/libexec/rpcd/luci-zerotier ] && chmod +x /usr/libexec/rpcd/luci-zerotier
+
+# Enable at rc level so ZeroTier firewall rules are (re)applied at boot out of
+# the box. Safe since r23: the service no longer re-enters fw4 from include
+# contexts, and start() is idempotent (skips the firewall reload entirely when
+# the desired rules are already in place). This must precede the ucitrack
+# restart below, because ucitrack only registers triggers for enabled inits.
+/etc/init.d/luci-zerotier enable
+
+# Register the procd config trigger from our ucitrack JSON without a reboot
+[ -x /etc/init.d/ucitrack ] && /etc/init.d/ucitrack restart
 
 [ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd restart
 [ -x /etc/init.d/uhttpd ] && /etc/init.d/uhttpd restart

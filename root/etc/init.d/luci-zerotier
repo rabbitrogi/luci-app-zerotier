@@ -3,6 +3,7 @@
 START=99
 
 PROG=/etc/init.d/zerotier
+FW4_LOCK=/var/run/fw4.lock
 
 get_config() {
 	config_get_bool enabled $1 enabled 0
@@ -11,101 +12,191 @@ get_config() {
 
 log() {
 	echo "$@"
-	logger -t luci-zerotier "$@" # debug
+	logger -t luci-zerotier "$@"
 }
 
 validate_path() {
+	# $2 = "file": also permit the upstream zerotier package's conventional
+	# single-file location /etc/zerotier.conf (valid for local_conf_path only,
+	# not for config_path which must be a directory)
 	case "$1" in
 		/etc/zerotier|/etc/zerotier/*|/var/lib/zerotier|/var/lib/zerotier/*|/tmp|/tmp/*)
 			return 0
 			;;
-		*)
-			log "Invalid path rejected: $1"
-			return 1
+		/etc/zerotier.conf)
+			[ "$2" = "file" ] && return 0
 			;;
 	esac
+	log "Invalid path rejected: $1"
+	return 1
+}
+
+# fw4 holds /var/run/fw4.lock exclusively for the entire start/reload run,
+# INCLUDING the execution of script includes. Calling "firewall reload" from
+# such a context re-enters fw4 and deadlocks on that lock until the include
+# is SIGKILLed after 30s — and the orphaned nested fw4 process then starts
+# a self-sustaining reload cascade (reproduced on 24.10.7: ~36s cycles,
+# growing process backlog, zone flapping). So: only reload when the lock
+# is free. If the lock is held, whoever holds it has already rendered the
+# ruleset from the uci state we just committed, so skipping is safe.
+fw_reload() {
+	: >> "$FW4_LOCK" 2>/dev/null
+	if flock -n "$FW4_LOCK" true 2>/dev/null; then
+		/etc/init.d/firewall reload
+	else
+		log "fw4 lock is held (reload/include in progress), skipping explicit reload"
+	fi
+}
+
+# The sync cron job is also registered by uci-defaults, but restoring a
+# config backup wipes the crontab — re-assert it here (idempotent) so the
+# hourly runtime-state sync survives backup restores.
+ensure_cron() {
+	crontab -l 2>/dev/null | grep -q 'zerotier-sync' && return 0
+	( crontab -l 2>/dev/null; echo '0 * * * * /usr/bin/zerotier-sync.sh >/dev/null 2>&1' ) | crontab -
+	log "Registered zerotier-sync cron job"
+}
+
+any_rules_present() {
+	local s
+	for s in zerotier zerotier_lan lan_zerotier zerotier_wan; do
+		[ -n "$(uci -q get "firewall.$s")" ] && return 0
+	done
+	return 1
+}
+
+rules_present() {
+	[ "$(uci -q get firewall.zerotier)" = "zone" ] || return 1
+	[ "$(uci -q get firewall.zerotier.name)" = "zerotier" ] || return 1
+	[ "$(uci -q get firewall.zerotier.device)" = "zt+" ] || return 1
+	[ "$(uci -q get firewall.zerotier_lan)" = "forwarding" ] || return 1
+	[ "$(uci -q get firewall.lan_zerotier)" = "forwarding" ] || return 1
+	[ "$(uci -q get firewall.zerotier_wan)" = "forwarding" ] || return 1
+	return 0
+}
+
+# NOTE on transaction structure: every "uci commit firewall" fires procd's
+# config trigger, which makes fw4 re-render ASYNCHRONOUSLY. When a previous
+# commit's render is still in flight while we issue our next batch of uci
+# commands, individual uci CLI invocations can fail intermittently ("uci:
+# Invalid argument") and committed state silently loses options (observed on
+# 24.10.7: the zone's 'name' vanished, fw4 then skipped the zone and all
+# forwardings — NAT silently broken). Therefore:
+#   1. All edits of one phase happen in a SINGLE "uci batch" invocation
+#      (one delta load/save cycle — no inter-command window).
+#   2. The committed result is verified afterwards; the whole transaction is
+#      retried on failure. Intermediate async renders may still read a partial
+#      state, but the render triggered by our final commit always sees the
+#      complete state (eventual consistency), and the committed state itself
+#      is guaranteed intact by the verify-retry loop.
+
+# Device matching uses the 'zt+' glob: fw4 renders it as the nftables
+# wildcard iifname/oifname "zt*", which matches current AND future
+# ZeroTier devices (verified on fw4-2024.12.18). This eliminates the
+# old zerotier-cli device enumeration and the 20s readiness wait loop:
+# the rules are correct no matter how long the daemon needs to bring
+# interfaces up (controller authorization can be slow on cold starts),
+# and devices of newly joined networks are covered automatically.
+write_rules() {
+	# zerotier -> lan: 让 zerotier 客户端访问局域网
+	# lan -> zerotier: 让局域网设备通过 zerotier 互访
+	# zerotier -> wan: 让 zerotier 客户端通过本机 WAN 上网（网关模式）
+	uci -q batch <<-'EOF'
+		delete firewall.zerotier
+		set firewall.zerotier=zone
+		set firewall.zerotier.name='zerotier'
+		set firewall.zerotier.input='ACCEPT'
+		set firewall.zerotier.output='ACCEPT'
+		set firewall.zerotier.forward='ACCEPT'
+		set firewall.zerotier.masq='1'
+		set firewall.zerotier.device='zt+'
+		delete firewall.zerotier_lan
+		set firewall.zerotier_lan=forwarding
+		set firewall.zerotier_lan.src='zerotier'
+		set firewall.zerotier_lan.dest='lan'
+		delete firewall.lan_zerotier
+		set firewall.lan_zerotier=forwarding
+		set firewall.lan_zerotier.src='lan'
+		set firewall.lan_zerotier.dest='zerotier'
+		delete firewall.zerotier_wan
+		set firewall.zerotier_wan=forwarding
+		set firewall.zerotier_wan.src='zerotier'
+		set firewall.zerotier_wan.dest='wan'
+	EOF
+}
+
+delete_rules() {
+	uci -q batch <<-'EOF'
+		delete firewall.zerotier
+		delete firewall.zerotier_lan
+		delete firewall.lan_zerotier
+		delete firewall.zerotier_wan
+	EOF
+}
+
+add_rules() {
+	if rules_present; then
+		log "Firewall rules for ZeroTier already in place, nothing to do"
+		return 0
+	fi
+	local attempt
+	for attempt in 1 2 3; do
+		write_rules
+		uci commit firewall
+		if rules_present; then
+			fw_reload
+			log "Added uci firewall rules for ZeroTier (device glob zt+)"
+			return 0
+		fi
+		log "uci transaction incomplete (attempt $attempt), retrying..."
+		sleep 1
+	done
+	log "ERROR: failed to write firewall rules after 3 attempts"
+	return 1
+}
+
+remove_rules() {
+	local attempt
+	any_rules_present || return 0
+	for attempt in 1 2 3; do
+		delete_rules
+		uci commit firewall
+		if ! any_rules_present; then
+			fw_reload
+			log "Removed uci firewall rules for ZeroTier"
+			return 0
+		fi
+		log "uci delete incomplete (attempt $attempt), retrying..."
+		sleep 1
+	done
+	log "ERROR: failed to remove firewall rules after 3 attempts"
+	return 1
 }
 
 start() {
 	config_load zerotier
 	config_foreach get_config zerotier
 
-	[ "$enabled" -eq 0 ] && log "Service disabled in config." && return 0
-
 	# Server-side path validation (defense-in-depth, mirrors general.js regex)
-	_local_conf=$(uci -q get zerotier.global.local_conf 2>/dev/null)
+	_local_conf=$(uci -q get zerotier.global.local_conf_path 2>/dev/null)
 	_config_path=$(uci -q get zerotier.global.config_path 2>/dev/null)
-	[ -n "$_local_conf" ] && { validate_path "$_local_conf" || return 1; }
+	[ -n "$_local_conf" ] && { validate_path "$_local_conf" file || return 1; }
 	[ -n "$_config_path" ] && { validate_path "$_config_path" || return 1; }
 
-	if ! $PROG running 2>/dev/null; then
-		log "ZeroTier service is not running!"
-		return 1
-	fi
+	ensure_cron
 
-	if ! ps 2>/dev/null | grep -q '[/]usr/bin/zerotier-one'; then
-		log "ZeroTier daemon (zerotier-one) is not running!"
-		return 1
-	fi
+	# Disabled or NAT off: make sure no stale rules are left behind
+	# (previously these paths returned early without cleanup).
+	[ "$enabled" -eq 0 ] && { remove_rules; log "Service disabled in config."; return 0; }
+	[ "$nat" -eq 0 ] && { remove_rules; log "NAT disabled in config."; return 0; }
 
-	[ "$nat" -eq 0 ] && log "NAT disabled in config." && return 0
+	# The rules match the zt* device glob, so they are harmless while the
+	# daemon is down and effective the moment its interfaces appear. There
+	# is no need to gate rule creation on daemon/interface readiness — warn
+	# only, and install the rules unconditionally.
+	$PROG running 2>/dev/null || log "Warning: zerotier service is not running; installing rules anyway"
 
-	local zt_devs zt_timeout zt_count
-
-	# ZeroTier 启动后联网需要时间，每 2 秒检测一次，最多 10 次（共 20 秒）
-	zt_timeout=2
-	zt_count=0
-	zt_max=10
-
-	# 等待真实的 zt 网络设备就绪：通过 JSON 输出提取 portDeviceName
-	# 只接受以 "zt" 开头的设备名，过滤掉未就绪时的 null/"-" 等值
-	while [ -z "$(zerotier-cli -j listnetworks 2>/dev/null | jsonfilter -e '$[*].portDeviceName' 2>/dev/null | grep '^zt')" ]; do
-		[ $zt_count -ge $zt_max ] && {
-			log "Timeout waiting for zt device after $((zt_timeout * zt_max))s"
-			return 1
-		}
-		zt_count=$((zt_count + 1))
-		sleep $zt_timeout
-	done
-
-	zt_devs="$(zerotier-cli -j listnetworks 2>/dev/null | jsonfilter -e '$[*].portDeviceName' 2>/dev/null | grep '^zt')"
-
-	# Configure firewall using uci
-	uci -q delete firewall.zerotier
-	uci set firewall.zerotier=zone
-	uci set firewall.zerotier.name='zerotier'
-	uci set firewall.zerotier.input='ACCEPT'
-	uci set firewall.zerotier.output='ACCEPT'
-	uci set firewall.zerotier.forward='ACCEPT'
-	uci set firewall.zerotier.masq='1'
-	
-	for i in ${zt_devs}; do
-		uci add_list firewall.zerotier.device="$i"
-	done
-	
-	# Add forwardings: zerotier <-> lan, zerotier -> wan
-	# zerotier -> lan: 让 zerotier 客户端访问局域网
-	# lan -> zerotier: 让局域网设备通过 zerotier 互访
-	# zerotier -> wan: 让 zerotier 客户端通过本机 WAN 上网（网关模式）
-	uci -q delete firewall.zerotier_lan
-	uci set firewall.zerotier_lan=forwarding
-	uci set firewall.zerotier_lan.src='zerotier'
-	uci set firewall.zerotier_lan.dest='lan'
-
-	uci -q delete firewall.lan_zerotier
-	uci set firewall.lan_zerotier=forwarding
-	uci set firewall.lan_zerotier.src='lan'
-	uci set firewall.lan_zerotier.dest='zerotier'
-
-	uci -q delete firewall.zerotier_wan
-	uci set firewall.zerotier_wan=forwarding
-	uci set firewall.zerotier_wan.src='zerotier'
-	uci set firewall.zerotier_wan.dest='wan'
-	
-	uci commit firewall
-	/etc/init.d/firewall reload
-	
-	log "Added uci firewall rules for ZeroTier interfaces"
+	add_rules
 }
 
 reload_service() {
@@ -114,13 +205,5 @@ reload_service() {
 
 stop() {
 	/usr/bin/zerotier-sync.sh 2>/dev/null
-
-	uci -q delete firewall.zerotier
-	uci -q delete firewall.lan_zerotier
-	uci -q delete firewall.zerotier_lan
-	uci -q delete firewall.zerotier_wan
-	uci commit firewall
-	/etc/init.d/firewall reload
-
-	log "Synced config and removed uci firewall rules for ZeroTier"
+	remove_rules
 }

@@ -46,30 +46,86 @@ htdocs/luci-static/resources/view/zerotier/
 └── info.js             # Info page (identity, networks table, peers table, ping)
 
 root/usr/libexec/rpcd/
-├── luci-zerotier       # Primary RPC daemon (status, networks, identity, peers, ping)
-└── zerotier            # Legacy RPC daemon (status, interfaces, reload)
+└── luci-zerotier       # RPC daemon (status, networks, identity, peers, ping)
 
 root/etc/init.d/
 └── luci-zerotier       # Firewall management (zone + forwarding rules)
-
-root/usr/share/zerotier/
-└── firewall.include    # Firewall reload trigger
 ```
 
 ## Firewall Rules (when NAT=1)
 
 When Auto NAT is enabled, `init.d/luci-zerotier` creates:
 
-- **Zone** `zerotier`: input=ACCEPT, output=ACCEPT, forward=ACCEPT, masq=1, devices=zt*
+- **Zone** `zerotier`: input=ACCEPT, output=ACCEPT, forward=ACCEPT, masq=1, device glob `zt+`
 - **Forwarding** `zerotier → lan`: ZT clients can access LAN
 - **Forwarding** `lan → zerotier`: LAN devices can reach ZT peers
 - **Forwarding** `zerotier → wan`: ZT clients can use this device as internet gateway
 
-Device detection uses `zerotier-cli listnetworks` (field `$8 ~ /^zt/`) with a 20-second timeout, avoiding the old `ifconfig | grep 'zt'` approach that could match stale or invalid interfaces.
+Since r23 the zone matches devices with the `zt+` glob, which fw4 renders as the
+nftables wildcard `iifname/oifname "zt*"`. Rules therefore match current and
+future ZeroTier devices without any `zerotier-cli` device enumeration or
+readiness wait loop, stay correct no matter how long controller authorization
+takes, and automatically cover devices of newly joined networks. `start()` is
+idempotent: when the desired rules already exist it does nothing (no uci
+writes, no firewall reload).
 
 ## Changelog
 
-### v2.2-r22 (current)
+### v2.2-r23 (current)
+
+**Firewall rework (reproduced and verified on OpenWrt 24.10.7 / fw4-2024.12.18)**
+
+- **Removed `firewall.include` entirely.** The include restarted `luci-zerotier` on
+  every fw4 reload, and `init.d/luci-zerotier` in turn called `/etc/init.d/firewall
+  reload` — re-entering fw4 while it holds `/var/run/fw4.lock` (fw4 keeps the lock
+  for the whole run, *including* the includes phase). The nested fw4 deadlocked for
+  30s until ucode SIGKILLed the include, and the orphaned nested fw4 then started a
+  **self-sustaining reload cascade**: ~36s cycles, a growing process backlog (each
+  stop+start enqueues 2 nested reloads, the lock drains 1 per cycle), the zerotier
+  zone flapping (deleted/re-added), and flash writes (sync + uci commit) on every
+  cycle. The include's registration is also cleaned up by `uci-defaults` on upgrade.
+- **Zone devices now use the `zt+` glob** instead of runtime `zerotier-cli`
+  enumeration + a 20s readiness wait loop. fw4 renders `list device 'zt+'` as the
+  nftables wildcard `iifname/oifname "zt*"`, matching current *and future* devices:
+  no timing dependency (controller authorization can be slow on cold starts), no
+  `zerotier-cli`/`jsonfilter` dependency in the init script, and devices of newly
+  joined networks are covered automatically.
+- **Boot persistence out of the box**: `uci-defaults` now runs
+  `/etc/init.d/luci-zerotier enable`. Previously nothing enabled the service, so
+  rules created on save were lost at reboot until the next manual save.
+- **`start()` is idempotent**: when the desired zone/forwardings already exist it
+  does nothing — no uci writes, no firewall reload (faster boot, no reload spam on
+  repeated saves). Legacy static-device zones are rebuilt with the glob on first run.
+- **Stale-rule cleanup**: disabling `enabled` or `nat` now *removes* the
+  zone/forwardings instead of leaving them behind.
+- **fw4 lock guard**: all firewall reloads go through `fw_reload()`, which skips the
+  explicit reload if fw4 currently holds its lock (whoever holds it has already
+  rendered the just-committed uci state, so skipping is safe).
+- **uci transaction race hardening**: every `uci commit firewall` fires procd's
+  config trigger, making fw4 re-render asynchronously. When a previous commit's
+  render was still in flight, subsequent individual `uci` commands intermittently
+  failed (`uci: Invalid argument`) and committed state silently lost options
+  (reproduced: the zone's `name` vanished; fw4 then skipped the zone *and* all
+  forwardings — NAT broken). All edits of a phase now happen in a single
+  `uci batch` invocation, and the committed result is verified with a retry loop
+  (the retry fired and self-healed during 5/5 consecutive-restart stress runs).
+- **Sync cron self-heals**: `init.d/luci-zerotier start()` re-asserts the hourly
+  `zerotier-sync` cron entry if missing, because restoring a config backup wipes
+  the crontab while `uci-defaults` only run once.
+- **ucitrack migrated to JSON**: reload-on-apply is now registered via
+  `/usr/share/ucitrack/luci-app-zerotier.json` (procd config trigger). The old
+  `uci add ucitrack` registration in `uci-defaults` was dead code: modern ucitrack
+  only reads `/usr/share/ucitrack/*.json`, and `uci add` fails outright on systems
+  where `/etc/config/ucitrack` does not exist (verified on 24.10.7).
+- **`local_conf` renamed to `local_conf_path`** (fixes a long-standing silent
+  failure): the LuCI form stored the local.conf path under `local_conf`, but the
+  zerotier package init script only honors `local_conf_path` — the setting never
+  reached the daemon. `uci-defaults` migrates existing values on upgrade. Also
+  fixed the placeholder/validator mismatch: `/etc/zerotier.conf` (the upstream
+  package's conventional location, used as the field placeholder) was rejected by
+  both validators; it is now explicitly allowed for `local_conf_path` only.
+
+### v2.2-r22
 
 **Bug fixes**
 - Fixed `firewall.include` not being executable: fw3 invokes include scripts via `execve()` when `type=script` and `reload=1`, so without `+x` the include was silently skipped. `uci-defaults` now `chmod +x` it explicitly.
