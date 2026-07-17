@@ -71,7 +71,27 @@ writes, no firewall reload).
 
 ## Changelog
 
-### v2.2-r25 (current)
+### v2.2-r26 (current)
+
+**Backup model change: on-demand instead of scheduled**
+
+- Removed the hourly `zerotier-sync` cron job entirely (uci-defaults also
+  cleans it up on upgrade). Runtime-state persistence now happens:
+  - **manually**, via a new **"Backup Now"** button (Advanced tab of the
+    settings page, backed by the new `sync_config` RPC method), and
+  - **on lifecycle hooks** — `init.d` `stop()`/`shutdown()` and the
+    `restart_service` RPC sync before touching the runtime dir.
+- When you actually need to back up: after adding a moon with
+  `zerotier orbit` (the UI has no moon configuration, so the runtime dir is
+  the only place that state lives), and for **controller nodes** — member
+  data exists only in the runtime dir's `controller.d`, so losing it means
+  the controller starts empty. Plain clients need no backup at all: identity
+  is guaranteed by the UCI `secret`, and `local.conf` is rebuilt from config.
+  On docker containers the orderly shutdown path never runs, so the hourly
+  cron was the only mechanism there — a full hour of exposure for data that
+  mostly does not matter.
+
+### v2.2-r25
 
 **Validators & paths**
 - `config_path` is now restricted to `/etc/zerotier`: the daemon refuses to

@@ -20,6 +20,8 @@ case "$1" in
 		json_close_object
 		json_add_object "ping_networks"
 		json_close_object
+		json_add_object "sync_config"
+		json_close_object
 		json_add_object "restart_service"
 		json_close_object
 		json_dump
@@ -334,6 +336,18 @@ case "$1" in
 
 				json_add_int "code" 0
 				json_add_string "result" "$result"
+				json_add_string "stderr" ""
+				json_dump
+				;;
+			sync_config)
+				# Persist runtime state to the config dir - SAFE: specific operation
+				json_init
+
+				output=$(/usr/bin/zerotier-sync.sh 2>&1)
+				exit_code=$?
+
+				json_add_int "code" "$exit_code"
+				json_add_string "stdout" "$output"
 				json_add_string "stderr" ""
 				json_dump
 				;;

@@ -171,3 +171,21 @@ msgstr "网络 ID 必须是 16 位十六进制字符（0-9, a-f）"
 
 msgid "Scan already in progress, please wait"
 msgstr "扫描正在进行中，请等待完成"
+
+msgid "Backup Now"
+msgstr "立即备份"
+
+msgid "Backing up..."
+msgstr "正在备份..."
+
+msgid "Save the current runtime state to the persistent configuration folder. Recommended after adding a moon with zerotier orbit, and essential for controller nodes (member data lives only in the runtime directory)."
+msgstr "将当前运行时状态保存到持久化配置目录。建议在用 zerotier orbit 添加 moon 后备份；对 controller 节点尤为关键（成员数据仅存于运行时目录）。"
+
+msgid "Runtime state backed up to persistent storage"
+msgstr "运行时状态已备份到持久化存储"
+
+msgid "Backup failed"
+msgstr "备份失败"
+
+msgid "Backup request failed"
+msgstr "备份请求失败"

@@ -47,10 +47,10 @@ if [ ! -f /etc/zerotier/local.conf ] && [ ! -f /etc/zerotier-one/local.conf ]; t
     fi
 fi
 
-# Set up periodic sync (every hour, saves runtime state to persistent storage).
-# NOTE: init.d/luci-zerotier start() re-asserts this entry, because restoring
-# a config backup wipes the crontab while uci-defaults only run once.
-( crontab -l 2>/dev/null | grep -v 'zerotier-sync'; echo '0 * * * * /usr/bin/zerotier-sync.sh >/dev/null 2>&1' ) | crontab -
+# r26 removed the periodic sync: backups run on demand (LuCI "Backup Now"
+# button) and from lifecycle hooks (init.d stop/shutdown, restart_service
+# RPC). Remove the legacy cron entry on upgrade.
+( crontab -l 2>/dev/null | grep -v 'zerotier-sync' ) | crontab -
 
 # Ensure scripts have execute permissions
 chmod +x /usr/bin/zerotier-sync.sh 2>/dev/null

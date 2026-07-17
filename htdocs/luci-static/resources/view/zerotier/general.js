@@ -21,6 +21,11 @@ var callLuciZerotierReload = rpc.declare({
 	method: 'reload'
 });
 
+var callLuciZerotierSync = rpc.declare({
+	object: 'luci-zerotier',
+	method: 'sync_config'
+});
+
 // Mask all but the first 4 and last 4 chars of a secret for display.
 // Used for the `secret` field so the value reaching the browser cannot
 // be directly exfiltrated, while still giving the user a visual cue that
@@ -133,6 +138,33 @@ return view.extend({
 
 		o = s.taboption('more', form.Flag, 'copy_config_path', _('Copy configuration folder'));
 		o.description = _('Copy configuration folder to RAM to prevent writing to flash (for ZT controller mode)');
+
+		o = s.taboption('more', form.DummyValue, 'backup_now', '');
+		o.render = function() {
+			return E('div', { 'class': 'cbi-value-field' }, [
+				E('button', {
+					'class': 'cbi-button cbi-button-action',
+					'click': function(ev) {
+						var btn = ev.currentTarget;
+						btn.disabled = true;
+						btn.textContent = _('Backing up...');
+						L.resolveDefault(callLuciZerotierSync(), {}).then(function(res) {
+							if (res && res.code === 0) {
+								ui.addNotification(null, E('p', _('Runtime state backed up to persistent storage')), 'info');
+							} else {
+								ui.addNotification(null, E('p', _('Backup failed') + (res && res.stderr ? ': ' + res.stderr : '')), 'warning');
+							}
+						}).catch(function() {
+							ui.addNotification(null, E('p', _('Backup request failed')), 'warning');
+						}).finally(function() {
+							btn.disabled = false;
+							btn.textContent = _('Backup Now');
+						});
+					}
+				}, [_('Backup Now')])
+			]);
+		};
+		o.description = _('Save the current runtime state to the persistent configuration folder. Recommended after adding a moon with zerotier orbit, and essential for controller nodes (member data lives only in the runtime directory).');
 
 		// Networks section
 		s = m.section(form.GridSection, 'network', _('Networks'));

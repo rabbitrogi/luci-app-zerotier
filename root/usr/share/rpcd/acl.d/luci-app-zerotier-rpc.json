@@ -16,7 +16,8 @@
 			"ubus": {
 				"luci-zerotier": [
 					"reload",
-					"restart_service"
+					"restart_service",
+					"sync_config"
 				]
 			}
 		}

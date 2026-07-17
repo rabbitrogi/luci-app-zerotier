@@ -52,15 +52,6 @@ fw_reload() {
 	fi
 }
 
-# The sync cron job is also registered by uci-defaults, but restoring a
-# config backup wipes the crontab — re-assert it here (idempotent) so the
-# hourly runtime-state sync survives backup restores.
-ensure_cron() {
-	crontab -l 2>/dev/null | grep -q 'zerotier-sync' && return 0
-	( crontab -l 2>/dev/null; echo '0 * * * * /usr/bin/zerotier-sync.sh >/dev/null 2>&1' ) | crontab -
-	log "Registered zerotier-sync cron job"
-}
-
 any_rules_present() {
 	local s
 	for s in zerotier zerotier_lan lan_zerotier zerotier_wan; do
@@ -186,8 +177,6 @@ start() {
 	_config_path=$(uci -q get zerotier.global.config_path 2>/dev/null)
 	[ -n "$_local_conf" ] && { validate_path "$_local_conf" file || return 1; }
 	[ -n "$_config_path" ] && { validate_path "$_config_path" dir || return 1; }
-
-	ensure_cron
 
 	# Disabled or NAT off: make sure no stale rules are left behind
 	# (previously these paths returned early without cleanup). The :-0
