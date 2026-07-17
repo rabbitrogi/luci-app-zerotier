@@ -84,7 +84,7 @@ return view.extend({
 		o.datatype = 'port';
 
 		o = s.taboption('more', form.TextValue, 'secret', _('Secret'));
-		o.description = _('Secret of zerotier client. Displayed masked for security; clear the field and paste a new identity.secret to replace it.');
+		o.description = _('Secret of zerotier client. Displayed masked for security; paste a new identity.secret to replace it, or clear the field to remove it (a new identity is generated on next start).');
 		o.rows = 3;
 		o.cfgvalue = function(section_id) {
 			var val = uci.get('zerotier', section_id, 'secret');
@@ -92,7 +92,13 @@ return view.extend({
 		};
 		o.write = function(section_id, formvalue) {
 			var current = uci.get('zerotier', section_id, 'secret');
-			if (!formvalue || (current && formvalue === maskSecret(current))) {
+			if (current && formvalue === maskSecret(current)) {
+				return;
+			}
+			if (!formvalue) {
+				if (current) {
+					uci.remove('zerotier', section_id, 'secret');
+				}
 				return;
 			}
 			uci.set('zerotier', section_id, 'secret', formvalue);
@@ -105,8 +111,8 @@ return view.extend({
 			if (!value) return true;
 			// /etc/zerotier.conf is the upstream zerotier package's conventional
 			// single-file location (see the commented option in its stock config)
-			if (!value.match(/^(\/etc\/zerotier\.conf|\/etc\/zerotier|\/var\/lib\/zerotier|\/tmp)(\/|$)/)) {
-				return _('Path must be within /etc/zerotier, /var/lib/zerotier, or /tmp');
+			if (!value.match(/^(\/etc\/zerotier\.conf$|\/etc\/zerotier(\/|$)|\/tmp(\/|$))/)) {
+				return _('Path must be within /etc/zerotier, or /tmp');
 			}
 			return true;
 		};
@@ -116,8 +122,11 @@ return view.extend({
 		o.placeholder = '/etc/zerotier';
 		o.validate = function(section_id, value) {
 			if (!value) return true;
-			if (!value.match(/^(\/etc\/zerotier|\/var\/lib\/zerotier|\/tmp)(\/|$)/)) {
-				return _('Path must be within /etc/zerotier, /var/lib/zerotier, or /tmp');
+			// Persistent locations only: the daemon refuses to start when
+			// config_path is missing, so a volatile /tmp path would leave it
+			// dead after every reboot
+			if (!value.match(/^\/etc\/zerotier(\/|$)/)) {
+				return _('Path must be within /etc/zerotier');
 			}
 			return true;
 		};
@@ -127,7 +136,7 @@ return view.extend({
 
 		// Networks section
 		s = m.section(form.GridSection, 'network', _('Networks'));
-		s.anonymous = false;
+		s.anonymous = true;
 		s.addremove = true;
 		s.sortable = true;
 
@@ -195,19 +204,25 @@ return view.extend({
 				});
 			};
 
-			var updateIdentity = function() {
-				return L.resolveDefault(callLuciZerotierIdentity(), {}).then(function(res) {
-					var identityEl = document.getElementById('zerotier_identity');
-					if (identityEl && res && res.identity) {
-						identityEl.textContent = '';
-						identityEl.appendChild(E('span', {}, [
-							_('Address') + ': '
-						]));
+		var updateIdentity = function() {
+			return L.resolveDefault(callLuciZerotierIdentity(), {}).then(function(res) {
+				var identityEl = document.getElementById('zerotier_identity');
+				if (identityEl) {
+					identityEl.textContent = '';
+					identityEl.appendChild(E('span', {}, [
+						_('Address') + ': '
+					]));
+					if (res && res.identity) {
 						identityEl.appendChild(E('b', {
 							'style': 'font-family: monospace; color: inherit;'
 						}, [res.identity]));
+					} else {
+						identityEl.appendChild(E('b', {
+							'style': 'color: gray;'
+						}, ['-']));
 					}
-				}).catch(function(err) {
+				}
+			}).catch(function(err) {
 					var identityEl = document.getElementById('zerotier_identity');
 					if (identityEl) {
 						identityEl.textContent = '';

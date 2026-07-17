@@ -28,8 +28,8 @@ msgstr "ZeroTier 运行端口，默认是 9993"
 msgid "Secret"
 msgstr "节点密钥"
 
-msgid "Secret of zerotier client. Displayed masked for security; clear the field and paste a new identity.secret to replace it."
-msgstr "客户端密钥（identity.secret）。为安全起见显示为掩码；如需更换，请清空输入框后粘贴新的密钥。"
+msgid "Secret of zerotier client. Displayed masked for security; paste a new identity.secret to replace it, or clear the field to remove it (a new identity is generated on next start)."
+msgstr "客户端密钥（identity.secret）。为安全起见显示为掩码；粘贴新密钥可替换，清空输入框则删除（下次启动时自动生成新身份）。"
 
 msgid "Configuration folder"
 msgstr "运行配置目录"
@@ -81,12 +81,6 @@ msgstr "延迟"
 
 msgid "Link"
 msgstr "链路"
-
-msgid "Last TX"
-msgstr "最近发送"
-
-msgid "Last RX"
-msgstr "最近接收"
 
 msgid "Path"
 msgstr "路径"
@@ -154,8 +148,23 @@ msgstr "未知错误"
 msgid "Failed to reload service, please run manually: /etc/init.d/luci-zerotier reload"
 msgstr "服务重载失败，请手动执行: /etc/init.d/luci-zerotier reload"
 
-msgid "Path must be within /etc/zerotier, /var/lib/zerotier, or /tmp"
-msgstr "路径必须在 /etc/zerotier、/var/lib/zerotier 或 /tmp 目录下"
+msgid "Path must be within /etc/zerotier, or /tmp"
+msgstr "路径必须在 /etc/zerotier 或 /tmp 目录下"
+
+msgid "Path must be within /etc/zerotier"
+msgstr "路径必须在 /etc/zerotier 目录下"
+
+msgid "Allow Managed"
+msgstr "允许管理"
+
+msgid "Allow Global"
+msgstr "允许全局"
+
+msgid "Allow Default Route"
+msgstr "允许默认路由"
+
+msgid "Allow DNS"
+msgstr "允许 DNS"
 
 msgid "Network ID must be 16 hex characters (0-9, a-f)"
 msgstr "网络 ID 必须是 16 位十六进制字符（0-9, a-f）"

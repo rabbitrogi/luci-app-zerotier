@@ -71,7 +71,62 @@ writes, no firewall reload).
 
 ## Changelog
 
-### v2.2-r24 (current)
+### v2.2-r25 (current)
+
+**Validators & paths**
+- `config_path` is now restricted to `/etc/zerotier`: the daemon refuses to
+  start when the directory is missing, so a volatile `/tmp` path would leave it
+  dead after every reboot. `/var/lib/zerotier` (never existed on OpenWrt) was
+  dropped from both validators. `local_conf_path` keeps `/tmp` and
+  `/etc/zerotier.conf`, which is now anchored exactly (the form previously
+  accepted `/etc/zerotier.conf/anything`, which the init script then rejected).
+- Sysupgrade keep list now covers `/etc/zerotier.conf`.
+- `zerotier-sync.sh` honors `zerotier.global.config_path` instead of hardcoding
+  the persist dir (state used to be written to `/etc/zerotier` even when a
+  custom directory was configured), and skips a self-sync if it ever points at
+  the runtime home.
+
+**Shell hardening (all reproduced/verified on busybox ash 1.36)**
+- `ping_networks`: CIDR prefixes are glob-validated before any test/arithmetic —
+  a non-numeric prefix made both range tests error out (so it was *not* skipped)
+  and `$((32 - cidr))` then evaluated as 32, yielding a ~4-billion-iteration
+  ping loop as root.
+- `ping_networks` lock is now atomic (`set -C` noclobber create, no more
+  check-then-create race), stores an absolute deadline that is recomputed from
+  the scan size (multi-network scans no longer outlive the old fixed 120s and
+  get falsely broken), the EXIT/INT/TERM traps are split so a signal actually
+  terminates the script instead of continuing after cleanup, and the pointless
+  `rm` after `mktemp` is gone (the results file keeps its 0600 mode).
+- `restart_service` RPC now syncs runtime state before restarting — the
+  zerotier init's `stop_service` does `rm -rf /var/lib/zerotier-one`, previously
+  discarding up to an hour of unsynced state on this path.
+- init script is fail-closed when the UCI config is missing entirely (unset
+  `$enabled`/`$nat` made both guards error out and fell through to installing
+  the rules). `STOP=98` + a dedicated `shutdown()` (sync only) persist runtime
+  state at poweroff without firewall churn.
+
+**UI & packaging**
+- The secret can finally be cleared from the UI (empty field removes the option;
+  the daemon generates a fresh identity on next start). Field description
+  updated accordingly.
+- Settings page identity display no longer sticks on "Collecting identity..."
+  when the daemon is down (shows `-` like the info page).
+- Networks grid no longer forces users to invent a section name the backend
+  never uses (`anonymous = true`, matching the original Lua app).
+- Menu entries now declare `depends.acl` so they only show for sessions holding
+  the matching ACL groups; dropped the unused `luci getInitList` grant.
+- `uci-defaults` commits firewall only when it actually removed a stale include
+  registration (every commit triggers an async fw4 render), and no longer
+  restarts uhttpd (which killed the very LuCI session running the install).
+- `local.conf.template` no longer pins `primaryPort: 9993` — the app's `Port`
+  option is the single source of truth (a local.conf `primaryPort` would compete
+  with the daemon's `-p` flag). Template comments updated.
+- `po/zh-cn/` removed: `luci.mk` only recognizes `zh_Hans`, so the directory was
+  never built. `po/zh_Hans` updated: added the missing `Allow Managed` /
+  `Allow Global` / `Allow Default Route` / `Allow DNS` entries, new validator /
+  secret strings, removed orphaned entries.
+
+### v2.2-r24
 
 **Bug fixes**
 - `general.js`: the service reload now runs **after** `ui.changes.apply()` has

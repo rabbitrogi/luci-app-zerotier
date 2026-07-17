@@ -1,6 +1,7 @@
 #!/bin/sh /etc/rc.common
 
 START=99
+STOP=98
 
 PROG=/etc/init.d/zerotier
 FW4_LOCK=/var/run/fw4.lock
@@ -16,15 +17,18 @@ log() {
 }
 
 validate_path() {
-	# $2 = "file": also permit the upstream zerotier package's conventional
-	# single-file location /etc/zerotier.conf (valid for local_conf_path only,
-	# not for config_path which must be a directory)
-	case "$1" in
-		/etc/zerotier|/etc/zerotier/*|/var/lib/zerotier|/var/lib/zerotier/*|/tmp|/tmp/*)
+	# $2 = kind: "file" (local_conf_path) additionally allows the upstream
+	# package's conventional single-file location /etc/zerotier.conf and
+	# volatile /tmp (harmless there — the daemon only uses it if present);
+	# "dir" (config_path) requires a persistent location: the daemon
+	# refuses to start when config_path is missing, so /tmp would leave
+	# it dead after every reboot.
+	case "$2:$1" in
+		file:/etc/zerotier.conf|file:/etc/zerotier/*|file:/tmp|file:/tmp/*)
 			return 0
 			;;
-		/etc/zerotier.conf)
-			[ "$2" = "file" ] && return 0
+		dir:/etc/zerotier|dir:/etc/zerotier/*)
+			return 0
 			;;
 	esac
 	log "Invalid path rejected: $1"
@@ -181,14 +185,17 @@ start() {
 	_local_conf=$(uci -q get zerotier.global.local_conf_path 2>/dev/null)
 	_config_path=$(uci -q get zerotier.global.config_path 2>/dev/null)
 	[ -n "$_local_conf" ] && { validate_path "$_local_conf" file || return 1; }
-	[ -n "$_config_path" ] && { validate_path "$_config_path" || return 1; }
+	[ -n "$_config_path" ] && { validate_path "$_config_path" dir || return 1; }
 
 	ensure_cron
 
 	# Disabled or NAT off: make sure no stale rules are left behind
-	# (previously these paths returned early without cleanup).
-	[ "$enabled" -eq 0 ] && { remove_rules; log "Service disabled in config."; return 0; }
-	[ "$nat" -eq 0 ] && { remove_rules; log "NAT disabled in config."; return 0; }
+	# (previously these paths returned early without cleanup). The :-0
+	# defaults keep this fail-closed when the UCI config is missing
+	# entirely (unset vars would otherwise error both guards and fall
+	# through to add_rules).
+	[ "${enabled:-0}" -eq 0 ] && { remove_rules; log "Service disabled in config."; return 0; }
+	[ "${nat:-0}" -eq 0 ] && { remove_rules; log "NAT disabled in config."; return 0; }
 
 	# The rules match the zt* device glob, so they are harmless while the
 	# daemon is down and effective the moment its interfaces appear. There
@@ -206,4 +213,11 @@ reload_service() {
 stop() {
 	/usr/bin/zerotier-sync.sh 2>/dev/null
 	remove_rules
+}
+
+# Invoked via the K-link at system shutdown (rc.common's default shutdown()
+# would call stop(), churning uci and the firewall for nothing) — only the
+# runtime-state sync matters here.
+shutdown() {
+	/usr/bin/zerotier-sync.sh 2>/dev/null
 }

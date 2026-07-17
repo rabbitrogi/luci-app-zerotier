@@ -135,29 +135,38 @@ case "$1" in
 				json_init
 
 				# 并发锁：防止多个 ping_networks 同时执行（多标签页、ubus 直调等）。
-				# 锁文件写入 "$PID $TIMESTAMP"。双重校验：
-				#   1. PID 还活着（kill -0）——正常进程退出/SIGKILL 后失效
-				#   2. 锁年龄 < 120s——兜底 PID 复用误判（最差 MAX_RUNNING=16 扫 /23 约 70s）
+				# noclobber (set -C) 原子创建，消除 check-then-create 竞态。
+				# 锁文件写入 "$PID $DEADLINE"（绝对期限，随扫描规模重算）。
+				# 双重校验：PID 还活着（kill -0）且未过 DEADLINE —— 兜底进程
+				# 暴毙（SIGKILL）后的锁复活。
 				LOCKFILE="/tmp/zt_ping.lock"
-				if [ -f "$LOCKFILE" ]; then
-					read -r _lp _lt < "$LOCKFILE" 2>/dev/null
-					_now=$(date +%s)
-					_la=$((_now - ${_lt:-0}))
-					if [ -n "$_lp" ] && kill -0 "$_lp" 2>/dev/null && [ "$_la" -lt 120 ]; then
-						json_add_int "code" 1
-						json_add_string "result" ""
-						json_add_string "stderr" "scan already in progress"
-						json_dump
+				_lock_max=120
+				_lock_try() {
+					( set -C; echo "$$ $(( $(date +%s) + _lock_max ))" > "$LOCKFILE" ) 2>/dev/null
+				}
+				_lock_busy() {
+					json_add_int "code" 1
+					json_add_string "result" ""
+					json_add_string "stderr" "scan already in progress"
+					json_dump
+				}
+				if ! _lock_try; then
+					read -r _lp _ld < "$LOCKFILE" 2>/dev/null
+					if [ -n "$_lp" ] && kill -0 "$_lp" 2>/dev/null && [ "$(date +%s)" -lt "${_ld:-0}" ]; then
+						_lock_busy
 						return
 					fi
 					rm -f "$LOCKFILE"
+					if ! _lock_try; then
+						_lock_busy
+						return
+					fi
 				fi
-				echo "$$ $(date +%s)" > "$LOCKFILE"
 
 				tmpfile=$(mktemp /tmp/zt_ping_XXXXXX)
 				_sem=""
-				trap 'rm -f "$tmpfile" "$_sem" "$LOCKFILE"; exec 9>&- 2>/dev/null' EXIT INT TERM
-				rm -f "$tmpfile"
+				trap 'rm -f "$tmpfile" "$_sem" "$LOCKFILE"; exec 9>&- 2>/dev/null' EXIT
+				trap 'exit 1' INT TERM
 
 				if ! command -v ping >/dev/null 2>&1; then
 					json_add_int "code" 1
@@ -185,6 +194,17 @@ case "$1" in
 					json_dump
 					return
 				fi
+
+				# 已知扫描规模后重算锁期限（每个 v4 网段约 60s 最差耗时 + 60s 余量），
+				# 覆盖多网络/低并发场景，避免锁被误判过期
+				_nnets=0
+				for _ipc in $ip_list; do
+					case "$_ipc" in
+						*.*.*.*/*) _nnets=$((_nnets + 1)) ;;
+					esac
+				done
+				_lock_max=$((60 + _nnets * 60))
+				echo "$$ $(( $(date +%s) + _lock_max ))" > "$LOCKFILE"
 
 				# 并发限流：FIFO 信号量模式。
 				# 预先向命名管道写入 MAX_RUNNING 个 token（换行符）；ping_one() 每次
@@ -246,6 +266,14 @@ case "$1" in
 							if ! echo "$ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
 								continue
 							fi
+							# Glob-validate the prefix BEFORE any test/arithmetic:
+							# a non-numeric cidr makes `[ -lt/-gt ]` error out on
+							# both sides (so the range check below would NOT skip
+							# it) and `$((32 - cidr))` would then evaluate as 32,
+							# yielding a ~4-billion-iteration ping loop as root.
+							case "$cidr" in
+								''|*[!0-9]*) continue ;;
+							esac
 							if [ "$cidr" -lt 1 ] || [ "$cidr" -gt 32 ]; then
 								continue
 							fi
@@ -319,6 +347,11 @@ case "$1" in
 					json_add_string "stdout" ""
 					json_add_string "stderr" "zerotier service not found"
 				else
+					# Persist runtime state first: the zerotier init's stop_service
+					# does rm -rf /var/lib/zerotier-one, discarding anything not yet
+					# synced (CLI-joined networks, controller/moon data)
+					/usr/bin/zerotier-sync.sh >/dev/null 2>&1
+
 					# Restart the main zerotier service
 					output=$(/etc/init.d/zerotier restart 2>&1)
 					exit_code=$?

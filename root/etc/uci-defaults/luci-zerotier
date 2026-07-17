@@ -25,9 +25,12 @@ fi
 # re-entered fw4's locked section and deadlocked; see README r23 changelog.)
 # Clean up its registration here, including the pre-r22 legacy name collision
 # where the include was registered as `firewall.zerotier` (type=include).
-uci -q delete firewall.zerotier_include
-[ "$(uci -q get firewall.zerotier)" = "include" ] && uci -q delete firewall.zerotier
-uci commit firewall
+# Only commit when something was actually deleted — every firewall commit
+# triggers an asynchronous fw4 re-render.
+_fw_changed=0
+uci -q delete firewall.zerotier_include && _fw_changed=1
+[ "$(uci -q get firewall.zerotier)" = "include" ] && { uci -q delete firewall.zerotier && _fw_changed=1; }
+[ "$_fw_changed" -eq 1 ] && uci commit firewall
 
 # Set default persistent config path if not already configured
 if ! uci -q get zerotier.global.config_path >/dev/null; then
@@ -64,7 +67,9 @@ chmod +x /usr/bin/zerotier-sync.sh 2>/dev/null
 [ -x /etc/init.d/ucitrack ] && /etc/init.d/ucitrack restart
 
 [ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd restart
-[ -x /etc/init.d/uhttpd ] && /etc/init.d/uhttpd restart
 
+# No uhttpd restart: it would kill the very LuCI session performing this
+# install/upgrade; rpcd restart + dropping the index cache suffice for the
+# new ACLs, RPC object and menu entries to be picked up.
 rm -f /tmp/luci-indexcache
 exit 0

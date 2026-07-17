@@ -1,6 +1,5 @@
 {
   "settings": {
-    "primaryPort": 9993,
     "forceTcpRelay": false
   }
 }
@@ -10,8 +9,11 @@
 // This file configures ZeroTier's behavior when operating in restricted
 // networks (e.g., behind corporate firewalls or in mainland China).
 //
+// NOTE: the UDP port is managed by the app's "Port" option (passed to the
+// daemon as -p). Set it there, not here — a primaryPort entry in this file
+// would compete with it.
+//
 // Settings:
-//   primaryPort:       UDP port ZeroTier listens on (default 9993)
 //   tcpFallbackRelay:  TCP relay server for when UDP is blocked
 //                      Format: "IP_ADDRESS/PORT"
 //                      Example:  "10.10.10.10/443"
