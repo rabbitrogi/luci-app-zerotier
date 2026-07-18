@@ -46,8 +46,8 @@ msgstr "使用拷贝而不是链接，来保护原目录内容（一般用于预
 msgid "Local configuration"
 msgstr "本地配置文件"
 
-msgid "Path to the local.conf"
-msgstr "配置文件将映射到运行配置目录下的 local.conf，默认为空"
+msgid "Path to the local.conf. Imported into the configuration folder on save & apply."
+msgstr "local.conf 文件路径。保存并应用时会导入到配置目录中。"
 
 msgid "Global Settings"
 msgstr "全局设置"

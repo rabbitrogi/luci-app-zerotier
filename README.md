@@ -25,7 +25,8 @@ The custom `luci-zerotier` RPC object provides these methods (no `luci.exec` nee
 | `get_peers` | read | `zerotier-cli listpeers` output |
 | `ping_networks` | read | Concurrent ping scan of all assigned IP subnets |
 | `reload` | write | Reload firewall rules via `/etc/init.d/luci-zerotier reload` |
-| `restart_service` | write | Restart the zerotier daemon |
+| `restart_service` | write | Restart the zerotier daemon (syncs runtime state first) |
+| `sync_config` | write | Persist runtime state to the config dir; also imports a configured `local_conf_path` into it |
 
 ## Installation
 
@@ -50,6 +51,19 @@ root/usr/libexec/rpcd/
 
 root/etc/init.d/
 └── luci-zerotier       # Firewall management (zone + forwarding rules)
+
+root/etc/uci-defaults/
+└── luci-zerotier       # Install/upgrade migrations, defaults seeding, cleanup
+
+root/usr/bin/
+└── zerotier-sync.sh    # Runtime-state persistence (mirror of daemon state dirs)
+
+root/etc/zerotier/
+└── local.conf.template # Seeded as /etc/zerotier/local.conf on install
+
+root/usr/share/rpcd/acl.d/     # ACL groups (UCI access + RPC methods)
+root/usr/share/ucitrack/       # Reload-on-apply registration
+root/lib/upgrade/keep.d/       # Sysupgrade backup list (/etc/zerotier*)
 ```
 
 ## Firewall Rules (when NAT=1)
@@ -71,7 +85,57 @@ writes, no firewall reload).
 
 ## Changelog
 
-### v2.2-r26 (current)
+### v2.2-r27
+
+**Apply-path overhaul & state-sync hardening (downstream-only, upstream untouched)**
+
+- `init.d/luci-zerotier`: define `reload()` explicitly. rc.common's default
+  is `restart` (stop+start), so every LuCI Save&Apply ran the full
+  sync + rule teardown/rebuild cycle twice (ucitrack + the explicit RPC
+  reload in general.js) — `reload_service()` was dead code all along, as
+  that hook only exists for procd scripts. Reload is now the lightweight,
+  idempotent `start()` it was meant to be (no uci writes, no firewall
+  reload, no sync when rules are already in place).
+- Save&Apply now syncs runtime state **before** anything commits.
+  Committing the zerotier config fires procd's reload trigger for the
+  daemon, whose upstream `stop_service` wipes `/var/lib/zerotier-one`.
+  The ucitrack/procd trigger order is not deterministic, so the only
+  ordering-safe point is before the commit, while the old runtime dir is
+  still intact — previously this path bypassed all sync hooks and could
+  discard unsynced controller/moon state.
+- `local_conf_path` now works via **import instead of symlinks**:
+  `sync_config` (which also runs before every apply) copies the configured
+  file over `config_path/local.conf`. Upstream links it with plain
+  `ln -s`, which fails silently when `config_path` already provides a
+  `local.conf` (this app seeds one) — the import makes the upstream
+  `cp -r` deliver the intended content without patching upstream.
+  `uci-defaults` likewise no longer seeds `local.conf` when
+  `local_conf_path` is set. (UI description updated accordingly.)
+- `zerotier-sync.sh`: mirror semantics for the daemon state dirs
+  (`networks.d`, `moons.d`, `peers.d`, `controller.d`) — persisted files
+  the daemon removed (e.g. a left network's `<id>.conf`) are deleted
+  instead of being resurrected into the runtime dir on the next start
+  (ghost rejoin: an `<id>.conf` present there means "join"). Top-level
+  files (`planet`, `local.conf`, `identity.secret`, ...) are never
+  deleted. Symlink-mode `config_path` (`copy_config_path=0`) is detected
+  via readlink and skipped instead of copying files onto themselves.
+- `ping_networks`: the EXIT trap only removes the lock while it is still
+  owned by this process (a scan outliving its deadline could otherwise
+  delete a newer process's lock and allow a third concurrent scan), and
+  the deadline update is atomic (temp file + rename — a concurrent
+  acquirer could read a half-written lockfile and falsely judge it stale).
+- Menu: the settings page now also depends on the `luci-app-zerotier-rpc`
+  ACL group — its status/identity/reload/backup RPCs live there, so a
+  session holding only `luci-app-zerotier` saw a page with all RPCs
+  failing.
+
+**Note on manual restarts**: `/etc/init.d/zerotier restart` from the
+shell still discards unsynced runtime state (upstream behavior, and a
+deliberate act — the runtime dir is volatile by design). Use the UI,
+`ubus call luci-zerotier restart_service`, or run `zerotier-sync.sh`
+first when the state matters.
+
+### v2.2-r26
 
 **Backup model change: on-demand instead of scheduled**
 

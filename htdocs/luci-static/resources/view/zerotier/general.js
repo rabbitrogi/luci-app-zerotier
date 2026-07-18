@@ -23,7 +23,8 @@ var callLuciZerotierReload = rpc.declare({
 
 var callLuciZerotierSync = rpc.declare({
 	object: 'luci-zerotier',
-	method: 'sync_config'
+	method: 'sync_config',
+	params: ['local_conf_path']
 });
 
 // Mask all but the first 4 and last 4 chars of a secret for display.
@@ -110,7 +111,7 @@ return view.extend({
 		};
 
 		o = s.taboption('more', form.Value, 'local_conf_path', _('Local configuration'));
-		o.description = _('Path to the local.conf');
+		o.description = _('Path to the local.conf. Imported into the configuration folder on save & apply.');
 		o.placeholder = '/etc/zerotier.conf';
 		o.validate = function(section_id, value) {
 			if (!value) return true;
@@ -279,11 +280,22 @@ return view.extend({
 	},
 
 	handleSaveApply: function(ev, mode) {
-		// Reload the service only AFTER the apply has committed the staged
-		// configuration: Map.save() alone merely writes to the ubus session
-		// delta, so reloading earlier would read the previous config (and the
-		// notification would describe a state that is not in effect yet).
 		return this.handleSave(ev).then(function() {
+			// Persist runtime state BEFORE the apply commits: committing the
+			// zerotier config fires procd's reload trigger for the daemon,
+			// whose upstream stop_service wipes /var/lib/zerotier-one. The
+			// ucitrack/procd trigger order is not deterministic, so syncing
+			// here — after staging (handleSave) but before the commit —
+			// is the only ordering-safe point. The pending form value of
+			// local_conf_path is passed along so its convergence uses the
+			// about-to-be-committed value, not the previous one.
+			var lc = uci.get('zerotier', 'global', 'local_conf_path') || '';
+			return L.resolveDefault(callLuciZerotierSync(lc), {});
+		}).then(function() {
+			// Reload the service only AFTER the apply has committed the staged
+			// configuration: Map.save() alone merely writes to the ubus session
+			// delta, so reloading earlier would read the previous config (and the
+			// notification would describe a state that is not in effect yet).
 			return ui.changes.apply(mode == '0');
 		}).then(function() {
 			return L.resolveDefault(callLuciZerotierReload(), {});

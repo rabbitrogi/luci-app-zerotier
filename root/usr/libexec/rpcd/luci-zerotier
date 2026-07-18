@@ -21,6 +21,7 @@ case "$1" in
 		json_add_object "ping_networks"
 		json_close_object
 		json_add_object "sync_config"
+			json_add_string "local_conf_path" "path"
 		json_close_object
 		json_add_object "restart_service"
 		json_close_object
@@ -152,6 +153,14 @@ case "$1" in
 					json_add_string "stderr" "scan already in progress"
 					json_dump
 				}
+				# 只释放本进程持有的锁：扫描超过 deadline 后锁可能已被其他进程
+				# 判定过期并重建，无条件 rm 会破坏新锁，放任第三个并发扫描
+				_lock_release() {
+					if [ -f "$LOCKFILE" ]; then
+						read -r _lp _ld < "$LOCKFILE" 2>/dev/null
+						[ "$_lp" = "$$" ] && rm -f "$LOCKFILE"
+					fi
+				}
 				if ! _lock_try; then
 					read -r _lp _ld < "$LOCKFILE" 2>/dev/null
 					if [ -n "$_lp" ] && kill -0 "$_lp" 2>/dev/null && [ "$(date +%s)" -lt "${_ld:-0}" ]; then
@@ -167,7 +176,7 @@ case "$1" in
 
 				tmpfile=$(mktemp /tmp/zt_ping_XXXXXX)
 				_sem=""
-				trap 'rm -f "$tmpfile" "$_sem" "$LOCKFILE"; exec 9>&- 2>/dev/null' EXIT
+				trap '_lock_release; rm -f "$tmpfile" "$_sem" "$LOCKFILE.$$.tmp"; exec 9>&- 2>/dev/null' EXIT
 				trap 'exit 1' INT TERM
 
 				if ! command -v ping >/dev/null 2>&1; then
@@ -206,7 +215,9 @@ case "$1" in
 					esac
 				done
 				_lock_max=$((60 + _nnets * 60))
-				echo "$$ $(( $(date +%s) + _lock_max ))" > "$LOCKFILE"
+				# 临时文件 + rename 原子更新期限：直接 > 覆写存在被并发申请者
+				# 读到空文件并误判锁过期的窗口
+				echo "$$ $(( $(date +%s) + _lock_max ))" > "$LOCKFILE.$$.tmp" && mv -f "$LOCKFILE.$$.tmp" "$LOCKFILE"
 
 				# 并发限流：FIFO 信号量模式。
 				# 预先向命名管道写入 MAX_RUNNING 个 token（换行符）；ping_one() 每次
@@ -341,10 +352,30 @@ case "$1" in
 				;;
 			sync_config)
 				# Persist runtime state to the config dir - SAFE: specific operation
+				#
+				# 可选参数 local_conf_path：表单里尚未提交的新值（保存并应用时
+				# 由 general.js 传入）；缺省时回退到已提交的配置值（Backup Now
+				# 按钮路径）。参数经 stdin 以 JSON 传入（rpcd shell 插件惯例）。
+				read -r input
+				json_load "$input" 2>/dev/null
+				json_get_var _lc local_conf_path 2>/dev/null
+				[ -n "$_lc" ] || _lc=$(uci -q get zerotier.global.local_conf_path 2>/dev/null)
+
 				json_init
 
 				output=$(/usr/bin/zerotier-sync.sh 2>&1)
 				exit_code=$?
+
+				# 收敛 local_conf_path 到持久化配置目录：上游 init 用裸 `ln -s`
+				# 把它链入运行目录，当 config_path 已提供 local.conf（本应用会播种）
+				# 时静默失败。改为把文件内容导入 config_path/local.conf，上游的
+				# cp -r 自然会带上正确内容，ln -s 失败也无害。
+				# 必须在 sync 之后执行，避免被运行目录里的旧拷贝覆盖。
+				if [ -n "$_lc" ] && [ -f "$_lc" ]; then
+					_cp=$(uci -q get zerotier.global.config_path 2>/dev/null)
+					[ -n "$_cp" ] || _cp="/etc/zerotier"
+					[ "$_lc" != "$_cp/local.conf" ] && cp -f "$_lc" "$_cp/local.conf" 2>/dev/null
+				fi
 
 				json_add_int "code" "$exit_code"
 				json_add_string "stdout" "$output"

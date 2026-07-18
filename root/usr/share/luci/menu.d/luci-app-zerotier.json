@@ -27,7 +27,7 @@
 			"path": "zerotier/general"
 		},
 		"depends": {
-			"acl": [ "luci-app-zerotier" ]
+			"acl": [ "luci-app-zerotier", "luci-app-zerotier-rpc" ]
 		}
 	},
 	"admin/vpn/zerotier/info": {

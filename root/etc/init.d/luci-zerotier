@@ -195,7 +195,15 @@ start() {
 	add_rules
 }
 
-reload_service() {
+# rc.common's default reload() is "restart" (stop+start): stop() runs the
+# runtime-state sync and tears the rules down, so every LuCI Save&Apply
+# (ucitrack fires reload on each committed change) churned uci, the
+# firewall and the flash twice over (ucitrack + the explicit RPC reload in
+# general.js). Defining reload_service() does NOT help here — that hook is
+# only honored for procd scripts (USE_PROCD=1); for a plain rc.common
+# script the function to override is reload() itself. start() is the
+# idempotent no-op this service was always meant to reload with.
+reload() {
 	start
 }
 

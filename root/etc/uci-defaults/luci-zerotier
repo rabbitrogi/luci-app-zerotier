@@ -39,8 +39,11 @@ if ! uci -q get zerotier.global.config_path >/dev/null; then
     uci commit zerotier
 fi
 
-# Seed local.conf from template if neither exists
-if [ ! -f /etc/zerotier/local.conf ] && [ ! -f /etc/zerotier-one/local.conf ]; then
+# Seed local.conf from template if neither exists — but not when
+# local_conf_path is set: a seeded file in config_path would shadow it
+# (upstream links with plain `ln -s`, which fails when the target exists;
+# sync_config's import step handles the precedence instead).
+if [ -z "$(uci -q get zerotier.global.local_conf_path)" ] && [ ! -f /etc/zerotier/local.conf ] && [ ! -f /etc/zerotier-one/local.conf ]; then
     if [ -f /etc/zerotier/local.conf.template ]; then
         # Strip JSON comments (lines starting with //) to create valid JSON
         grep -v '^[[:space:]]*//' /etc/zerotier/local.conf.template | grep -v '^$' > /etc/zerotier/local.conf
