@@ -307,6 +307,78 @@ rctl() {
 	r_ctl_body=$(printf '%s' "$_out" | sed '$d')
 }
 
+# rctl_tok -- the controller authtoken, read over the ssh channel. rctl
+# performs this same read internally on every call, which costs one ssh
+# handshake each; member-list needs the token for one map request plus N
+# member requests and pays that handshake exactly once, not N+1 times. Kept
+# as a separate helper instead of refactoring rctl to share it, so the
+# ctl-get path that shipped in r33 stays byte-for-byte what was proven.
+rctl_tok() {
+	rrsh cat /var/lib/zerotier-one/authtoken.secret 2>/dev/null
+}
+
+# rfetch <path> -- one authenticated GET through the ALREADY-OPEN tunnel,
+# using the token the caller holds in _tok. Same wire format and same
+# result-globals convention as rctl (status in r_fetch_code, body in
+# r_fetch_body), because the same trade-off applies: a command substitution
+# would run this in a subshell the assignments cannot escape. The method is
+# pinned to GET on purpose -- this exists so member-list can batch reads
+# without re-reading the token per request, and it must never grow into a
+# write path.
+rfetch() {
+	_out=$(curl -s --max-time 20 -X GET \
+		-H "X-ZT1-Auth: $_tok" -w '\n%{http_code}' \
+		"http://127.0.0.1:$r_lport$1" 2>/dev/null)
+	r_fetch_code=$(printf '%s' "$_out" | tail -n1 | tr -dc '0-9')
+	r_fetch_body=$(printf '%s' "$_out" | sed '$d')
+}
+
+# r_json_ok -- is $1 one COMPLETE JSON object? No JSON parser is guaranteed
+# in a root helper's environment (no jq on OpenWrt; jsonfilter belongs to
+# rpcd's process, not to this script), yet member-list embeds controller
+# bodies raw into a larger array, where one bad body would make every OTHER
+# member unreadable. So completeness is checked mechanically, which a plain
+# first/last-character shape test cannot do: exactly one top-level object,
+# whose containers close in TYPE and in ORDER -- a '}' inside a string must
+# not counterfeit an ending, a ']' must not close a '{' the way a mere
+# running depth count would allow, a body truncated mid-array must not pass
+# as whole, and nothing but whitespace may follow the brace that closes the
+# object -- with no string or escape left open at EOF. Only ASCII structural
+# bytes are inspected, so multibyte names pass through untouched.
+r_json_ok() {
+	printf '%s' "$1" | awk '
+		{
+			for (i = 1; i <= length($0); i++) {
+				c = substr($0, i, 1)
+				if (e) { e = 0; continue }
+				if (s) {
+					if (c == "\\") e = 1
+					else if (c == "\"") s = 0
+					continue
+				}
+				if (done) {
+					if (c != " " && c != "\t") { bad = 1; exit }
+					continue
+				}
+				if (c == "\"") { s = 1; continue }
+				if (c == "{" || c == "[") {
+					if (st == "") {
+						if (c != "{") { bad = 1; exit }
+						ob_seen = 1
+					}
+					st = st c
+				} else if (c == "}" || c == "]") {
+					l = substr(st, length(st), 1)
+					if (l == "" || (c == "}" && l != "{") || (c == "]" && l != "[")) { bad = 1; exit }
+					st = substr(st, 1, length(st) - 1)
+					if (st == "") done = 1
+				}
+			}
+		}
+		END { if (bad == 1 || ob_seen != 1 || st != "" || s == 1 || e == 1) exit 1 }
+	'
+}
+
 # Wrap a raw JSON body alongside a status code. The body is already JSON, so it
 # is embedded as a value rather than escaped into a string -- no re-quoting,
 # no mangling of embedded quotes or newlines.
@@ -450,6 +522,103 @@ ctl-get)
 	_c=$r_ctl_code
 	r_tunnel_down
 	r_emit "$_b" "${_c:-0}"
+	;;
+
+# peer-list <section> -- the controller's /peer endpoint, verbatim.
+#
+# A dedicated subcommand with a hardcoded path, NOT a widening of ctl-get:
+# /peer does not live under /controller, and ctl-get's allowlist exists
+# precisely so a generic passthrough cannot grow new endpoints one request
+# at a time. One fixed read-only GET is narrower than opening the front door.
+peer-list)
+	r_load "$2"
+	r_tunnel_up || { r_tunnel_down; r_die "could not open the ssh tunnel to $r_dest"; }
+	rctl GET /peer
+	_b=$r_ctl_body
+	_c=$r_ctl_code
+	r_tunnel_down
+	r_emit "$_b" "${_c:-0}"
+	;;
+
+# member-list <section> <nwid> -- every member of one network in TWO ssh
+# round trips, not two per member.
+#
+# The members table needs the member id map AND each member's full record;
+# the map carries only {id: revision} (measured on the live 1.14.2
+# controller, as the Remote page already records). Composed from existing
+# pieces that is one ctl-get for the map plus one PER MEMBER, and every rpcd
+# call opens its own tunnel and reads its own token -- two ssh handshakes of
+# 1-3s each per member. The production network has 29 members, so drawing
+# one table costs 30-90s of handshakes. This subcommand instead reads the
+# token once, opens the tunnel once, then curls the map and every member
+# LOCALLY through the forwarded port: two ssh connections total, and N cheap
+# loopback requests.
+#
+# Read-only by construction: every request issued below is a GET.
+member-list)
+	r_load "$2"
+	r_valid_hex "$3" 16 || r_die "network id must be 16 hex digits"
+	r_tunnel_up || { r_tunnel_down; r_die "could not open the ssh tunnel to $r_dest"; }
+	_tok=$(rctl_tok)
+	[ -n "$_tok" ] || { r_tunnel_down; r_die "could not read the remote controller token over ssh"; }
+	rfetch "/controller/network/$3/member"
+	_code=$r_fetch_code
+	_map=$r_fetch_body
+	case "$_map" in '{'*'}') ;; *) _map="" ;; esac
+	if [ -z "$_map" ] || [ "$_code" != "200" ]; then
+		# Without the map the member set is unknown. Emit the upstream
+		# status with a null body rather than an empty array -- "[]"
+		# would read as a network with no members, not as a failure.
+		r_tunnel_down
+		r_emit "" "${_code:-0}"
+	else
+		# The map is one JSON object keyed by member id. No JSON parser
+		# is available to this script, so keys are picked out textually:
+		# in JSON a colon can only follow a key, so a quoted 10-hex
+		# token followed by ':' cannot be a value however the response
+		# is packed onto lines, and grep -o (supported by busybox grep)
+		# yields every match.
+		_mids=$(printf '%s' "$_map" | grep -oE '"[0-9a-fA-F]{10}"[[:space:]]*:' \
+			| sed -e 's/^"//' -e 's/"[[:space:]]*:$//')
+
+		# Every candidate is re-validated with r_valid_hex before it is
+		# placed in a URL. This script runs as root and the extraction
+		# above is textual: URL safety rests on this validation, not on
+		# the regex upstream of it.
+		_arr=""
+		for _mid in $_mids; do
+			r_valid_hex "$_mid" 10 || continue
+			rfetch "/controller/network/$3/member/$_mid"
+			# A failed member fetch is SKIPPED, not embedded: an error
+			# body or a truncated read would make the whole array
+			# unparseable and cost every other member its row. A
+			# missing row is recoverable; a broken table is not.
+			_ok=false
+			case "$r_fetch_body" in
+				'{'*'}')
+					[ "$r_fetch_code" = "200" ] && r_json_ok "$r_fetch_body" && _ok=true
+					;;
+			esac
+			if [ "$_ok" = "true" ]; then
+				# Joined, never blindly concatenated: a comma goes
+				# between two ACCEPTED elements only, so no path
+				# yields a leading, trailing or doubled comma.
+				# Elements are embedded raw for the same reason
+				# r_emit embeds bodies raw -- each has passed the
+				# complete-object check, and a complete JSON
+				# value is self-delimiting: a '}' inside a
+				# string ends no object here any more than it
+				# does in the controller's own output.
+				if [ -n "$_arr" ]; then
+					_arr="$_arr,$r_fetch_body"
+				else
+					_arr="$r_fetch_body"
+				fi
+			fi
+		done
+		r_tunnel_down
+		r_emit "[$_arr]" "$_code"
+	fi
 	;;
 
 # ctl-network-set <section> <nwid|new> <json-body>
