@@ -230,6 +230,15 @@ stderr and continues. Two consequences are handled explicitly:
   network it is administering; that avoids the bootstrap problem of needing
   network membership to grant network membership.
 
+- Layout defects found by screenshotting the real page, not by reading the
+  code: a network id rendered one hex character per line because `.table`
+  defaults to `table-layout:auto`, which shrinks a column to its narrowest
+  unbreakable content. The per-network editors were also nested inside that
+  table, so their wide pool forms fought the id column for width. Editors now
+  sit outside the table as sibling blocks and both tables use fixed layout.
+- Two panels hardcoded a light background, which left them nearly unreadable
+  under LuCI's dark theme. They now use a border and inherit the theme colours.
+
 ### v2.2-r33
 
 **Remote Controller / Moon management**

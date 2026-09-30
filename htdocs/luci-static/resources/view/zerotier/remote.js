@@ -382,12 +382,26 @@ function networksPanel(section) {
 		});
 		cfg.style.display = 'none';
 
-		return E('tr', {}, [
-			E('td', { 'style': 'font-family:monospace;' }, [ nw.nwid ]),
-			E('td', {}, [ name ]),
-			E('td', { 'style': 'text-align:center;' }, [ bcast ]),
-			E('td', { 'style': 'text-align:right; white-space:nowrap;' }, [ save, ' ', cToggle, ' ', mToggle, ' ', del ]),
-			E('td', { 'colspan': '4' }, [ cfg, members ])
+		/* The editors live outside the network <table> on purpose. Nested
+		 * tables share column widths, so a wide pool form stretched the nwid
+		 * column until the address broke to one character per line. */
+		return E('div', { 'style': 'margin-bottom:14px;' }, [
+			E('table', {
+				'class': 'table',
+				/* auto layout ignores a width on a lone cell and shrinks the
+				 * column to the widest unbreakable content, which is one hex
+				 * character. Fixed layout honours the column widths below. */
+				'style': 'table-layout:fixed; width:100%;'
+			}, [ E('tr', {}, [
+				E('td', { 'style': 'width:170px; font-family:monospace; white-space:nowrap;' }, [ nw.nwid ]),
+				E('td', { 'style': 'width:auto;' }, [ name ]),
+				E('td', { 'style': 'width:90px; text-align:center; white-space:nowrap;' }, [ bcast ]),
+				E('td', { 'style': 'width:280px; text-align:right;' }, [
+					E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:4px; justify-content:flex-end;' },
+						[ save, cToggle, mToggle, del ])
+				])
+			]) ]),
+			E('div', { 'style': 'padding-left:12px;' }, [ cfg, members ])
 		]);
 	}
 
@@ -425,15 +439,15 @@ function networksPanel(section) {
 				return;
 			}
 			var hdr = E('tr', {}, [
-				E('th', {}, [_('Node address')]),
+				E('th', { 'style': 'width:130px;' }, [_('Node address')]),
 				E('th', {}, [_('Name')]),
-				E('th', {}, [_('Managed IP')]),
-				E('th', {}, [_('Version')]),
-				E('th', {}, [_('Authorized')]),
-				E('th', {})
+				E('th', { 'style': 'width:150px;' }, [_('Managed IP')]),
+				E('th', { 'style': 'width:80px;' }, [_('Version')]),
+				E('th', { 'style': 'width:100px; text-align:center;' }, [_('Authorized')]),
+				E('th', { 'style': 'width:150px;' }, [])
 			]);
 			var rows = [ hdr ];
-			var tbl = E('table', { 'class': 'table' }, rows);
+			var tbl = E('table', { 'class': 'table', 'style': 'table-layout:fixed; width:100%;' }, rows);
 			into.appendChild(tbl);
 
 			/* The member list returns only {id: revision}; every real field
@@ -480,7 +494,7 @@ function networksPanel(section) {
 
 					tbl.appendChild(E('tr', {}, [
 						E('td', { 'style': 'font-family:monospace;' }, [ mid ]),
-						E('td', {}, [ nameI ]),
+						E('td', { 'style': 'min-width:150px;' }, [ nameI ]),
 						/* An empty ipAssignments with version -1 means the node has
 						 * never come up on this network, so there is genuinely no
 						 * address to show. Saying so beats a blank cell that looks
@@ -494,7 +508,10 @@ function networksPanel(section) {
 							]) ]),
 						E('td', {}, [ ver ]),
 						E('td', { 'style': 'text-align:center;' }, [ authC ]),
-						E('td', { 'style': 'text-align:right; white-space:nowrap;' }, [ saveB, ' ', revoke ])
+						E('td', { 'style': 'text-align:right;' }, [
+							E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:4px; justify-content:flex-end;' },
+								[ saveB, revoke ])
+						])
 					]));
 					appendMember(i + 1);
 				});
@@ -518,17 +535,19 @@ function networksPanel(section) {
 				return;
 			}
 			var head = E('tr', {}, [
-				E('th', {}, [_('Network ID')]), E('th', {}, [_('Name')]),
-				E('th', { 'style': 'text-align:center;' }, [_('Broadcast')]),
-				E('th', { 'style': 'text-align:right;' }, [_('Actions')]), E('th', {})
+				E('th', { 'style': 'width:170px;' }, [_('Network ID')]),
+				E('th', { 'style': 'min-width:160px;' }, [_('Name')]),
+				E('th', { 'style': 'text-align:center; white-space:nowrap;' }, [_('Broadcast')]),
+				E('th', { 'style': 'text-align:right;' }, [_('Actions')])
 			]);
-			var body = [ head ];
+			/* netRow returns a block element, not a <tr>: the per-network editors
+			 * below the row must not be trapped inside the table, or their wide
+			 * forms stretch the nwid column (see netRow). So the header goes in
+			 * its own table and each network follows as a sibling block. */
+			table.appendChild(E('table', { 'class': 'table' }, [ head ]));
 			ids.forEach(function(nwid) {
 				L.resolveDefault(rpcCtlGet(section, '/controller/network/' + nwid), {}).then(function(d) {
-					if (d && d.code === 200 && d.body) body.push(netRow(d.body));
-					if (body.length === ids.length + 1) {
-						table.appendChild(E('table', { 'class': 'table' }, body));
-					}
+					if (d && d.code === 200 && d.body) table.appendChild(netRow(d.body));
 				});
 			});
 		});
@@ -584,7 +603,11 @@ function moonPanel(section) {
 
 		box.appendChild(E('div', { 'style': 'margin:6px 0;' }, [
 			E('div', {}, [ _('The following will run on the remote host:') ]),
-			E('pre', { 'style': 'background:#f4f4f4; padding:8px; overflow:auto; font-size:12px;' }, [ res.script ])
+			E('pre', {
+				/* Same reason as the requirements line: a fixed light background
+				 * is unreadable under LuCI's dark theme. */
+				'style': 'border:1px solid #666; border-radius:3px; padding:8px; overflow:auto; font-size:12px;'
+			}, [ res.script ])
 		]));
 		box.appendChild(E('div', { 'style': 'color:orange; margin-bottom:6px;' }, [ res.notes ]));
 		box.appendChild(go);
@@ -695,8 +718,13 @@ return view.extend({
 				E('div', { 'style': 'margin-bottom:8px;' }, [
 					E('p', {}, [ _('A ZeroTier controller or moon root must live on a server with a fixed public IP, reachable by SSH, with passwordless sudo for that user. The controller API has no TLS and refuses every non-loopback caller, so this page never talks to it directly: it opens an SSH tunnel from this router to the remote loopback interface and sends API calls through it. The controller authtoken is read over SSH on demand and is never stored here.') ])
 				]),
-				E('div', { 'style': 'background:#f4f4f4; padding:8px; font-size:12px; font-family:monospace;' }, [
-					_('Requirements: a fixed public IP · SSH access · a keypair whose public key is in the remote authorized_keys · passwordless sudo · ZeroTier built with the controller (1.14.2 or the 1.16 nonfree build)')
+				E('div', {
+					/* No hardcoded background: LuCI has a dark theme, and a fixed
+					 * light panel with default-coloured text left this line almost
+					 * unreadable. A muted currentColor border works in both. */
+					'style': 'border-left:3px solid #888; padding:6px 10px; opacity:0.85; font-size:13px;'
+				}, [
+					_('Requirements: a fixed public IP · SSH access · a keypair whose public key is in the remote authorized_keys · passwordless sudo · ZeroTier built with the controller (1.14.2, or a 1.16 nonfree build)')
 				])
 			]),
 			E('div', { 'class': 'cbi-section' }, [
