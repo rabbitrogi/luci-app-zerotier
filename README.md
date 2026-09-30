@@ -217,19 +217,27 @@ stderr and continues. Two consequences are handled explicitly:
   **two** connections -- read the auth token once, open the tunnel once, then
   curl the map and every member over loopback -- and `remote_peer_list` adds one
   more call, issued in parallel with it.
-  Measured on a 31-member test network, one `member-list` call takes **4.0s**
-  (reproduced twice) against **4.5s** for the 32 `ctl-get` calls r34 made, so the
-  batching is only **1.1x** on a fast link -- and that ratio is *not* the point.
-  Timing the phases shows why: the tunnel is up in 0.03s and the cost is
-  elsewhere, in 32 sequential loopback HTTP requests at ~120ms each. The
-  handshakes that r34's 30-90s estimate assumed do not dominate on a fast path.
-  The win is expected to be larger on the real target, where each SSH handshake
-  runs through dropbear on a router CPU over a WAN round trip, but **that has not
-  been measured on-device** and the earlier 30-90s figure was an estimate, not a
-  measurement. Two further costs are visible and worth naming: about 1.2s of the
-  4.0s is the HTTP floor, and roughly 2.8s is shell subprocess overhead from
-  `rfetch` forking `curl` plus `tail`/`tr`/`sed` per response. Collapsing those
-  three pipelines into one is the obvious r36 follow-up.
+
+  Measured on the target hardware (CWWK CW-MBX-AD12, OpenWrt 25.12.5, x86_64,
+  dropbear) against a 31-member test network, over the real ubus path LuCI uses:
+
+  | | |
+  |---|---|
+  | one `ctl-get` (the r34 unit of cost) | 2.05s |
+  | r34 N+1, 32 calls | **65.4s** |
+  | r35 `remote_member_list` | **2.57s** |
+  | r35 `remote_peer_list` | 2.05s |
+
+  That is **~25x**, about 63 seconds saved per table draw, and `member-list`
+  costs barely more than a single `ctl-get` because the 31 member fetches are
+  loopback requests rather than handshakes.
+
+  The number is transport-dependent, which is why it has to be measured per
+  target. From a laptop on a fast link the same comparison is only 4.5s vs 4.0s
+  (~1.1x), because an OpenSSH handshake to the controller costs 70-370ms there
+  against dropbear's ~2s. A batching win measured on the wrong host is
+  meaningless -- the SSH handshake is the entire cost, so the figure moves with
+  whatever the client is.
 - A member row is not a self-delimiting string. `member-list` embeds each
   controller response body raw into one array, so every body is first checked to
   be a **complete** JSON object by an awk validator that tracks string and escape
@@ -261,6 +269,13 @@ stderr and continues. Two consequences are handled explicitly:
 - Both new subcommands issue **only GET**, and the new `rfetch` helper has its
   method pinned so it cannot grow into a write path. `rctl` was deliberately left
   untouched so the r33 `ctl-get` path stays exactly what was proven.
+- **An rpcd method needs three edits, not two**, and the third is easy to miss
+  because nothing warns you: the ACL entry (or the browser may not call it), the
+  `call)` dispatch arm (or it errors), and the `list)` declaration block (or
+  rpcd never registers it and every call returns `Method not found` while the
+  script on disk looks perfect). Only the on-device ubus call caught this -- a
+  DOM harness that stubs `rpc.declare` checks the name JavaScript dials, not
+  whether the method exists.
 
 ### v2.2-r34
 
