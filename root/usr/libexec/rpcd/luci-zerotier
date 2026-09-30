@@ -5,6 +5,98 @@
 # Security: Define allowed operations only
 # No arbitrary command execution allowed
 
+# --- Moon helpers -------------------------------------------------------
+#
+# A ZeroTier moon is identified by a 40-bit address rendered as exactly 10
+# hex digits, but `zerotier-cli listmoons` reports the world id zero-padded to
+# 16 (e.g. 000000123456abcd). The daemon's control-plane route is
+#   /moon/([0-9a-fA-F]{10})
+# which matches EXACTLY 10 characters -- so passing the padded form, a
+# stripped form, or the docs' 14-char form all 404. Every id crossing this
+# boundary is therefore normalized to exactly 10 hex digits.
+#
+# `zerotier-cli orbit` is also a silent no-op (exit 0, no output, nothing
+# done) when the seed argument is zero -- the C++ is
+# `if ((worldId) && (seed)) { ... }` with no else branch. And
+# `zerotier-cli deorbit` returns "200 deorbit OK" for a moon that does not
+# exist. Exit codes are therefore never trusted: both mutating methods
+# verify the actual result by diffing `listmoons`.
+
+# Strip leading zeros (keeping >=1 char), then left-pad back to 10 digits.
+# Rejects non-hex input and anything still wider than 10 digits after
+# normalization, which could never match the route anyway.
+moon_norm_id() {
+	local v="$1"
+	while [ "${#v}" -gt 1 ]; do
+		case "$v" in
+			0*) v="${v#0}" ;;
+			*) break ;;
+		esac
+	done
+	while [ "${#v}" -lt 10 ]; do
+		v="0$v"
+	done
+	case "$v" in
+		*[!0-9a-fA-F]*) return 1 ;;
+	esac
+	[ "${#v}" -eq 10 ] || return 1
+	# the zero address is never a valid moon id
+	[ "$v" != "0000000000" ] || return 1
+	printf '%s' "$v"
+}
+
+# Persisted moon world files, one 16-digit hex name per line, from the
+# configured persistent config dir. Orbit persistence in ZeroTier 1.16 IS
+# the moons.d/<id>.moon file: there is no separate .orbit state object
+# (ZT_STATE_OBJECT_* covers only identity/planet/moon/peer/network-config),
+# and `deorbit` unlinks that file. zerotier-sync.sh already mirrors moons.d.
+moon_persisted_list() {
+	local d
+	d=$(uci -q get zerotier.global.config_path 2>/dev/null)
+	[ -n "$d" ] || d="/etc/zerotier"
+	[ -d "$d/moons.d" ] || return 0
+	find "$d/moons.d" -type f -name '*.moon' 2>/dev/null | while read -r f; do
+		printf '%s\n' "$(basename "$f" .moon)"
+	done
+}
+
+moon_is_listed() {
+	# $1 = 10-digit id, $2 = listmoons output.
+	# The daemon reports world ids as %.16llx, i.e. 16 hex digits zero-padded
+	# on the left. Our id is always normalized to 10 digits, so padding it
+	# with 6 zeros reproduces exactly the daemon's form for every id whose
+	# significant length is <= 10 (16-L zeros + L digits either way).
+	local id="$1" out="$2"
+	case "$out" in
+		*"\"000000$id\""*) return 0 ;;
+	esac
+	return 1
+}
+
+# Wait for an orbited moon to show up in `listmoons`.
+#
+# An orbit RPC only registers the seed in RAM (Topology::_moonSeeds); the moon
+# becomes visible in `listmoons` -- and only becomes persistent as
+# moons.d/<id>.moon -- once a root peer has delivered the signed world. That
+# handshake takes a moment, so an immediate re-check would report a false
+# failure for a perfectly valid orbit against a reachable moon. Poll for a
+# bounded grace period instead; a genuinely unreachable moon never appears.
+#
+# $1 = 10-digit id, $2 = attempts, $3 = seconds between attempts.
+moon_wait_listed() {
+	local id="$1" tries="$2" nap="$3" i out=""
+	i=0
+	while [ "$i" -lt "$tries" ]; do
+		out=$(zerotier-cli listmoons 2>/dev/null)
+		if moon_is_listed "$id" "$out"; then
+			return 0
+		fi
+		i=$((i + 1))
+		[ "$i" -lt "$tries" ] && sleep "$nap"
+	done
+	return 1
+}
+
 case "$1" in
 	list)
 		json_init
@@ -16,10 +108,19 @@ case "$1" in
 		json_close_object
 		json_add_object "get_identity"
 		json_close_object
-		json_add_object "get_peers"
-		json_close_object
-		json_add_object "ping_networks"
-		json_close_object
+			json_add_object "get_peers"
+			json_close_object
+			json_add_object "list_moons"
+			json_close_object
+			json_add_object "orbit_moon"
+				json_add_string "moon_id" "string"
+				json_add_string "seed" "string"
+			json_close_object
+			json_add_object "deorbit_moon"
+				json_add_string "moon_id" "string"
+			json_close_object
+			json_add_object "ping_networks"
+			json_close_object
 		json_add_object "sync_config"
 			json_add_string "local_conf_path" "path"
 		json_close_object
@@ -132,6 +233,168 @@ case "$1" in
 					json_add_string "stderr" "zerotier-cli not found"
 				fi
 
+				json_dump
+				;;
+			list_moons)
+				# Read-only: the daemon's own /moon control plane via
+				# `zerotier-cli listmoons`. Returns the raw JSON so the
+				# frontend can normalize the 16-digit world ids and read
+				# the per-moon `waiting` flag itself.
+				json_init
+
+				if ! command -v zerotier-cli >/dev/null 2>&1; then
+					json_add_int "code" 1
+					json_add_string "moons" ""
+					json_add_string "persisted" ""
+					json_add_string "stderr" "zerotier-cli not found"
+					json_dump
+					return
+				fi
+
+				_out=$(zerotier-cli listmoons 2>&1)
+				_rc=$?
+				json_add_int "code" "$_rc"
+				json_add_string "moons" "$_out"
+				json_add_string "persisted" "$(moon_persisted_list | tr '\n' ' ')"
+				json_add_string "stderr" ""
+				json_dump
+				;;
+			orbit_moon)
+				# Orbit a moon. The seed must be the address of one of the
+				# moon's roots; the node fetches the signed world from it and
+				# only then persists moons.d/<id>.moon. Until that happens the
+				# orbit lives purely in RAM (Topology::_moonSeeds is never
+				# persisted) and does not survive a daemon restart -- the
+				# daemon's `waiting:true` flag reports exactly that state and
+				# the UI surfaces it.
+				read -r input
+				json_load "$input" 2>/dev/null
+				json_get_var _mid moon_id 2>/dev/null
+				json_get_var _seed seed 2>/dev/null
+				unset input
+
+				json_init
+
+				if ! command -v zerotier-cli >/dev/null 2>&1; then
+					json_add_int "code" 1
+					json_add_string "moon_id" ""
+					json_add_boolean "orbited" 0
+					json_add_string "stderr" "zerotier-cli not found"
+					json_dump
+					return
+				fi
+
+				_nid=$(moon_norm_id "$_mid")
+				if [ -z "$_nid" ]; then
+					json_add_int "code" 1
+					json_add_string "moon_id" ""
+					json_add_boolean "orbited" 0
+					json_add_string "stderr" "Invalid Moon ID: expected hex digits (10, or the 16-digit padded form), not the zero address"
+					json_dump
+					return
+				fi
+
+				_sid=$(moon_norm_id "$_seed")
+				if [ -z "$_sid" ]; then
+					json_add_int "code" 1
+					json_add_string "moon_id" "$_nid"
+					json_add_boolean "orbited" 0
+					json_add_string "stderr" "Invalid Moon Seed: use the 10-digit address of one of the moon's roots (a zero seed is silently ignored by zerotier-cli)"
+					json_dump
+					return
+				fi
+
+				_out=$(zerotier-cli orbit "$_nid" "$_sid" 2>&1)
+				_rc=$?
+
+				if moon_wait_listed "$_nid" 6 2; then
+					# Definition arrived: the moon is fully in effect and
+					# moons.d/<id>.moon now exists, so it can be persisted.
+					json_add_int "code" 0
+					json_add_boolean "orbited" 1
+					json_add_boolean "pending" 0
+					json_add_string "stderr" ""
+					/usr/bin/zerotier-sync.sh >/dev/null 2>&1
+				elif [ "$_rc" -eq 0 ]; then
+					# The orbit itself SUCCEEDED. Topology::addMoon always
+					# records a non-zero seed in _moonSeeds, so the daemon has
+					# accepted it; only the signed world definition is still
+					# in flight (it arrives out-of-band from the root, which
+					# can take a while behind a relay or an unseen NAT).
+					# Reporting this as a failure would be wrong: the moon is
+					# already orbited. It is just not persistent yet -- which
+					# is exactly what the `waiting` state means.
+					json_add_int "code" 0
+					json_add_boolean "orbited" 1
+					json_add_boolean "pending" 1
+					json_add_string "stderr" ""
+				else
+					json_add_int "code" 1
+					json_add_boolean "orbited" 0
+					json_add_boolean "pending" 0
+					json_add_string "stderr" "zerotier-cli could not reach the ZeroTier service (rc=$_rc${_out:+, out=$_out})"
+				fi
+				json_add_string "moon_id" "$_nid"
+				json_dump
+				;;
+			deorbit_moon)
+				# `zerotier-cli deorbit` returns "200 deorbit OK" even for a
+				# moon that was never orbited (Topology::removeMoon just
+				# iterates the current set). So: snapshot, deorbit, re-check,
+				# and only report success when the moon actually disappeared.
+				read -r input
+				json_load "$input" 2>/dev/null
+				json_get_var _mid moon_id 2>/dev/null
+				unset input
+
+				json_init
+
+				if ! command -v zerotier-cli >/dev/null 2>&1; then
+					json_add_int "code" 1
+					json_add_string "moon_id" ""
+					json_add_boolean "deorbited" 0
+					json_add_string "stderr" "zerotier-cli not found"
+					json_dump
+					return
+				fi
+
+				_nid=$(moon_norm_id "$_mid")
+				if [ -z "$_nid" ]; then
+					json_add_int "code" 1
+					json_add_string "moon_id" ""
+					json_add_boolean "deorbited" 0
+					json_add_string "stderr" "Invalid Moon ID: expected hex digits (10, or the 16-digit padded form), not the zero address"
+					json_dump
+					return
+				fi
+
+				_before=$(zerotier-cli listmoons 2>/dev/null)
+				if ! moon_is_listed "$_nid" "$_before"; then
+					json_add_int "code" 0
+					json_add_boolean "deorbited" 0
+					json_add_string "stderr" "moon $_nid is not orbited"
+					json_add_string "moon_id" "$_nid"
+					json_dump
+					return
+				fi
+
+				_out=$(zerotier-cli deorbit "$_nid" 2>&1)
+				_rc=$?
+				_after=$(zerotier-cli listmoons 2>/dev/null)
+
+				if moon_is_listed "$_nid" "$_after"; then
+					json_add_int "code" 1
+					json_add_boolean "deorbited" 0
+					json_add_string "stderr" "moon still listed after deorbit (rc=$_rc${_out:+, out=$_out})"
+				else
+					json_add_int "code" 0
+					json_add_boolean "deorbited" 1
+					json_add_string "stderr" ""
+					# deorbit unlinks moons.d/<id>.moon; mirror the removal
+					# into the persistent dir so it does not come back.
+					/usr/bin/zerotier-sync.sh >/dev/null 2>&1
+				fi
+				json_add_string "moon_id" "$_nid"
 				json_dump
 				;;
 			ping_networks)

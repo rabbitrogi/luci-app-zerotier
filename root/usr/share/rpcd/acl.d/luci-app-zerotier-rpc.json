@@ -8,6 +8,7 @@
 					"get_networks",
 					"get_identity",
 					"get_peers",
+					"list_moons",
 					"ping_networks"
 				]
 			}
@@ -17,7 +18,9 @@
 				"luci-zerotier": [
 					"reload",
 					"restart_service",
-					"sync_config"
+					"sync_config",
+					"orbit_moon",
+					"deorbit_moon"
 				]
 			}
 		}
