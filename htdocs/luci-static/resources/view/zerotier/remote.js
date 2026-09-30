@@ -740,7 +740,16 @@ function networksPanel(section) {
 			E('th', { 'style': 'width:26%;' }, [_('Peer address / latency')])
 		]);
 		into.appendChild(E('div', { 'style': 'display:flex; gap:8px; align-items:center; margin:6px 0;' }, [ filterI, counterHost ]));
-		into.appendChild(E('table', { 'class': 'table', 'style': 'table-layout:fixed; width:100%;' }, [ hdr, tbody ]));
+		/* The scroll wrapper and min-width are load-bearing: table-layout:fixed
+		 * pins column widths but does NOT clip or wrap content, so a nowrap cell
+		 * wider than its share prints over the next column. Screenshotting the
+		 * page at 820px showed "192.168.192.x" on top of "OFFLINE" down the whole
+		 * table. 1040px is where the widest nowrap cell (the peer endpoint, 26%
+		 * column) stops overflowing; below it the table scrolls instead of
+		 * colliding, and above it the min-width is inert. */
+		into.appendChild(E('div', { 'style': 'overflow-x:auto;' }, [
+			E('table', { 'class': 'table', 'style': 'table-layout:fixed; width:100%; min-width:1040px;' }, [ hdr, tbody ])
+		]));
 		drawRows();
 		});
 	}
