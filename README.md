@@ -193,6 +193,43 @@ stderr and continues. Two consequences are handled explicitly:
 
 ## Changelog
 
+### v2.2-r34
+
+**Managed IPs, assignment pools and routes**
+
+- The network editor gains **IP assignment pools** and **routes**, which is what
+  makes a member's address knowable. Previously a member showed only its node
+  address, so there was no way to answer "what IP does this node have?".
+- The member list now shows a **Managed IP** column read from the controller's
+  `ipAssignments`, plus the member name, client version and authorization state.
+  An empty cell is never left ambiguous: `never connected` means the node has
+  not come up on the network yet (`vMajor < 0`), and `no pool assigned` means it
+  is up but no pool covers it.
+- Member detail is fetched per member rather than from the list, which returns
+  only `{id: revision}`. Those calls are **chained, not parallel** -- each opens
+  an SSH tunnel, so 30 concurrent requests would hammer the router.
+- Save semantics were established by experiment, not assumed. Reading
+  `networkUpdateFromPostData` in 1.14.2 and then testing confirmed: scalar
+  fields are **merged** (every field is guarded by a presence check, so omitted
+  fields survive), but `routes` and `ipAssignmentPools` are **arrays replaced
+  wholesale**. So the form edits those two as whole lists and writes them back
+  whole, while sending scalars directly.
+- **A pool allocates nothing unless `v4AssignMode.zt` is true.** This is the
+  silent one: with `zt` false the pool is stored, the route is stored, the UI
+  reports success, and no member ever receives an address. It is now always sent
+  alongside the pool. Reproduced both ways on 1.14.2 -- identical pool and route
+  gave `ipAssignments: []` without it and `10.88.88.39` with it.
+- The form warns before saving when no route covers a pool's subnet, since the
+  result is otherwise an address-less network with no indication why.
+- `v4AssignMode` is sent in the object form `{"zt": true}`. The published
+  tutorial shows the string `"zt"`, but the schema defines an object and the
+  daemon silently ignores a wrongly-typed field -- following the tutorial here
+  fails quietly.
+- Controller mode is deliberately **not** required on the remote. Management runs
+  over an SSH-forwarded loopback port, so the router never has to join the
+  network it is administering; that avoids the bootstrap problem of needing
+  network membership to grant network membership.
+
 ### v2.2-r33
 
 **Remote Controller / Moon management**

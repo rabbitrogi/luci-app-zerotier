@@ -163,15 +163,166 @@ function networksPanel(section) {
 	var add = E('button', { 'class': 'cbi-button cbi-button-add' }, [ _('Create network') ]);
 	var table = E('div', {});
 
+	/* One row of the pool editor. The pool is {ipRangeStart, ipRangeEnd} and
+	 * the route needs a CIDR target, so start/end are validated separately. */
+	function poolRow(pool, onChange) {
+		var s = E('input', { 'type': 'text', 'value': (pool && pool.ipRangeStart) || '', 'placeholder': '192.168.192.1', 'style': 'width:130px;' });
+		var e = E('input', { 'type': 'text', 'value': (pool && pool.ipRangeEnd) || '', 'placeholder': '192.168.192.254', 'style': 'width:130px;' });
+		var rm = E('button', { 'class': 'cbi-button cbi-button-remove' }, [ _('Remove') ]);
+		rm.addEventListener('click', function() { onChange(null, s, e); });
+		return { el: E('tr', {}, [
+			E('td', {}, [ s ]), E('td', {}, [ e ]),
+			E('td', { 'style': 'text-align:right;' }, [ rm ])
+		]), start: s, end: e };
+	}
+
+	function routeRow(rt, onChange) {
+		var t = E('input', { 'type': 'text', 'value': (rt && rt.target) || '', 'placeholder': '192.168.192.0/24', 'style': 'width:150px;' });
+		var v = E('input', { 'type': 'text', 'value': (rt && typeof rt.via === 'string') ? rt.via : '', 'placeholder': _('empty = direct'), 'style': 'width:150px;' });
+		var rm = E('button', { 'class': 'cbi-button cbi-button-remove' }, [ _('Remove') ]);
+		rm.addEventListener('click', function() { onChange(null, t, v); });
+		return { el: E('tr', {}, [
+			E('td', {}, [ t ]), E('td', {}, [ v ]),
+			E('td', { 'style': 'text-align:right;' }, [ rm ])
+		]), target: t, via: v };
+	}
+
+	function isIp(s) { return /^(\d{1,3}\.){3}\d{1,3}$/.test(s) && s.split('.').every(function (o) { return +o >= 0 && +o <= 255; }); }
+	function isCidr(s) {
+		var m = /^([0-9.]+)\/(\d{1,2})$/.exec(s);
+		return !!m && isIp(m[1]) && +m[2] >= 0 && +m[2] <= 32;
+	}
+
 	function netRow(nw) {
 		var name = E('input', { 'type': 'text', 'value': nw.name || '', 'style': 'width:100%;' });
 		var bcast = E('input', { 'type': 'checkbox' });
 		bcast.checked = !!nw.enableBroadcast;
 
+		var mtu = E('input', { 'type': 'number', 'value': nw.mtu || 2800, 'min': '1280', 'max': '10000', 'style': 'width:90px;' });
+		var mlimit = E('input', { 'type': 'number', 'value': (nw.multicastLimit == null ? 32 : nw.multicastLimit), 'min': '0', 'style': 'width:80px;' });
+		var priv = E('input', { 'type': 'checkbox' });
+		priv.checked = nw.private !== false;
+
+		/* Scalars are merged by the controller (every field is guarded by a
+		 * presence check server-side), but routes and ipAssignmentPools are
+		 * arrays replaced wholesale -- so those are read, edited here and
+		 * written back whole. Verified against 1.14.2 behaviour, not assumed. */
+		var pools = (nw.ipAssignmentPools || []).slice();
+		var routes = (nw.routes || []).slice();
+		var poolTbl = E('tbody', {});
+		var routeTbl = E('tbody', {});
+
+		/* drawPools re-renders from the model, so the input references handed
+		 * back by poolRow are captured here and used to focus the new row.
+		 * Walking childNodes by index would silently break if the table
+		 * structure ever changed. */
+		var lastPoolInputs = null;
+		function drawPools() {
+			while (poolTbl.firstChild) poolTbl.removeChild(poolTbl.firstChild);
+			lastPoolInputs = null;
+			pools.forEach(function (p, i) {
+				var r = poolRow(p, function () { pools.splice(i, 1); drawPools(); });
+				poolTbl.appendChild(r.el);
+				lastPoolInputs = r;
+			});
+			if (!pools.length) poolTbl.appendChild(E('tr', {}, [ E('td', { 'colspan': '3', 'style': 'color:orange;' }, [ _('No pool — members get no managed address') ]) ]));
+		}
+		function drawRoutes() {
+			while (routeTbl.firstChild) routeTbl.removeChild(routeTbl.firstChild);
+			routes.forEach(function (r, i) {
+				routeTbl.appendChild(routeRow(r, function () { routes.splice(i, 1); drawRoutes(); }).el);
+			});
+			if (!routes.length) routeTbl.appendChild(E('tr', {}, [ E('td', { 'colspan': '3', 'style': 'color:orange;' }, [ _('No route') ]) ]));
+		}
+
+		function addPool() {
+			pools.push({ ipRangeStart: '', ipRangeEnd: '' });
+			drawPools();
+			if (lastPoolInputs && lastPoolInputs.start.focus) lastPoolInputs.start.focus();
+		}
+		function addRoute() { routes.push({ target: '', via: null }); drawRoutes(); }
+
+		drawPools(); drawRoutes();
+
+		/* A pool without a route covering the same subnet leaves members with
+		 * no address: the pool is allocated but never installed, and the member
+		 * list then shows no IP with no indication why. Reads the live input
+		 * values so it reflects unsaved edits. */
+		function poolWarning() {
+			var rows = poolTbl.childNodes, nets = [], i, j;
+			for (i = 0; i < rows.length; i++) {
+				var s = rows[i].childNodes[0] && rows[i].childNodes[0].childNodes[0];
+				if (!s) continue;
+				var sv = (s.value || '').trim();
+				if (!sv || !isIp(sv)) continue;
+				nets.push(sv.split('.').slice(0, 3).join('.') + '.0/24');
+			}
+			if (!nets.length) return null;
+			var rrows = routeTbl.childNodes, targets = [];
+			for (j = 0; j < rrows.length; j++) {
+				var t = rrows[j].childNodes[0] && rrows[j].childNodes[0].childNodes[0];
+				if (t && (t.value || '').trim()) targets.push(t.value.trim());
+			}
+			for (i = 0; i < nets.length; i++) {
+				if (targets.indexOf(nets[i]) === -1) {
+					return _('No route covers ') + nets[i] +
+						_(' — members will not receive an address from this pool.');
+				}
+			}
+			return null;
+		}
+
 		var save = E('button', { 'class': 'cbi-button cbi-button-apply' }, [ _('Save') ]);
 		save.addEventListener('click', function() {
+			var warn = poolWarning();
+			if (warn && !confirm(warn + '\n\n' + _('Save anyway?'))) return;
+
+			var newPools = [], newRoutes = [], bad = null;
+			poolTbl.childNodes.forEach(function (tr) {
+				var s = tr.childNodes[0] && tr.childNodes[0].childNodes[0];
+				var e = tr.childNodes[1] && tr.childNodes[1].childNodes[0];
+				if (!s || !e) return;
+				var sv = (s.value || '').trim(), ev = (e.value || '').trim();
+				if (!sv && !ev) return;
+				if (!isIp(sv) || !isIp(ev)) { bad = _('Pool bounds must be IPv4 addresses'); return; }
+				newPools.push({ ipRangeStart: sv, ipRangeEnd: ev });
+			});
+			if (bad) { ui.addNotification(null, E('span', { 'class': 'alert-message warning' }, [ bad ]), 'warning'); return; }
+
+			routeTbl.childNodes.forEach(function (tr) {
+				var t = tr.childNodes[0] && tr.childNodes[0].childNodes[0];
+				var v = tr.childNodes[1] && tr.childNodes[1].childNodes[0];
+				if (!t) return;
+				var tv = (t.value || '').trim(), vv = (v && v.value || '').trim();
+				if (!tv) return;
+				if (!isCidr(tv)) { bad = _('Route target must be CIDR, e.g. 192.168.192.0/24'); return; }
+				if (vv && !isIp(vv)) { bad = _('Route via must be an IPv4 address, or empty for a direct route'); return; }
+				newRoutes.push({ target: tv, via: vv || null });
+			});
+			if (bad) { ui.addNotification(null, E('span', { 'class': 'alert-message warning' }, [ bad ]), 'warning'); return; }
+
+			/* v4AssignMode.zt must be enabled for a pool to hand out addresses at
+			 * all -- with it false the pool is stored but nothing is allocated,
+			 * silently. Verified on 1.14.2: identical pool+routes produce
+			 * ipAssignments:[] without it and a real address with it. Sent
+			 * unconditionally so a cleared pool also switches assignment off
+			 * rather than leaving it dangling.
+			 *
+			 * The object form is required. The published tutorial shows the
+			 * string "zt", but the schema defines an object and the daemon
+			 * ignores a wrongly-typed field without complaint. */
+			var body = JSON.stringify({
+				name: name.value,
+				enableBroadcast: bcast.checked,
+				private: priv.checked,
+				mtu: parseInt(mtu.value, 10) || 2800,
+				multicastLimit: parseInt(mlimit.value, 10) || 0,
+				ipAssignmentPools: newPools,
+				routes: newRoutes,
+				v4AssignMode: { zt: newPools.length > 0 }
+			});
+
 			save.disabled = true;
-			var body = JSON.stringify({ name: name.value, enableBroadcast: bcast.checked });
 			L.resolveDefault(rpcNetSet(section, nw.nwid, body), {}).then(function(res) {
 				if (res && res.code === 200) load();
 				else ui.addNotification(null, E('span', { 'class': 'alert-message warning' }, [ errText(res, _('Update failed')) ]), 'warning');
@@ -199,12 +350,44 @@ function networksPanel(section) {
 			loadMembers(nw.nwid, members);
 		});
 
+		var cfg = E('div', { 'style': 'margin-top:8px; padding-left:12px;' }, [
+			E('div', { 'style': 'display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:6px;' }, [
+				E('label', {}, [ _('MTU')]), mtu,
+				E('label', {}, [ _('Multicast limit')]), mlimit,
+				E('label', {}, [ _('Private')]), priv
+			]),
+			E('div', { 'style': 'font-weight:bold; margin-top:6px;' }, [ _('IP assignment pools') ]),
+			E('div', { 'style': 'color:#666; font-size:12px;' }, [
+				_('The controller allocates addresses from these ranges and reports them per member.')
+			]),
+			E('table', { 'class': 'table' }, [
+				E('tr', {}, [ E('th', {}, [_('First IP')]), E('th', {}, [_('Last IP')]), E('th', {}) ]),
+				poolTbl
+			]),
+			E('button', { 'class': 'cbi-button cbi-button-add', 'click': addPool }, [ _('Add pool') ]),
+			E('div', { 'style': 'font-weight:bold; margin-top:10px;' }, [ _('Routes') ]),
+			E('div', { 'style': 'color:#666; font-size:12px;' }, [
+				_('A pool needs a route covering the same subnet, otherwise members receive no address.')
+			]),
+			E('table', { 'class': 'table' }, [
+				E('tr', {}, [ E('th', {}, [_('Target')]), E('th', {}, [_('Via')]), E('th', {}) ]),
+				routeTbl
+			]),
+			E('button', { 'class': 'cbi-button cbi-button-add', 'click': addRoute }, [ _('Add route') ])
+		]);
+		var cToggle = E('button', { 'class': 'cbi-button' }, [ _('Configure') ]);
+		cToggle.addEventListener('click', function() {
+			if (cfg.style.display === 'none') { cfg.style.display = 'block'; cToggle.textContent = _('Hide'); }
+			else { cfg.style.display = 'none'; cToggle.textContent = _('Configure'); }
+		});
+		cfg.style.display = 'none';
+
 		return E('tr', {}, [
 			E('td', { 'style': 'font-family:monospace;' }, [ nw.nwid ]),
 			E('td', {}, [ name ]),
 			E('td', { 'style': 'text-align:center;' }, [ bcast ]),
-			E('td', { 'style': 'text-align:right; white-space:nowrap;' }, [ save, ' ', mToggle, ' ', del ]),
-			E('td', { 'colspan': '4' }, [ members ])
+			E('td', { 'style': 'text-align:right; white-space:nowrap;' }, [ save, ' ', cToggle, ' ', mToggle, ' ', del ]),
+			E('td', { 'colspan': '4' }, [ cfg, members ])
 		]);
 	}
 
@@ -241,22 +424,82 @@ function networksPanel(section) {
 				into.appendChild(E('div', { 'style': 'color:orange;' }, [ _('No members have joined this network yet.') ]));
 				return;
 			}
-			var rows = ids.map(function(mid) {
-				var revoke = E('button', { 'class': 'cbi-button cbi-button-remove' }, [ _('Revoke') ]);
-				revoke.addEventListener('click', function() {
-					revoke.disabled = true;
-					var b = JSON.stringify({ authorized: false, activeBridge: false, capability: null, id: mid, name: '', nodeId: mid });
-					L.resolveDefault(rpcMemberSet(section, nwid, mid, b), {}).then(function() {
-						loadMembers(nwid, into);
+			var hdr = E('tr', {}, [
+				E('th', {}, [_('Node address')]),
+				E('th', {}, [_('Name')]),
+				E('th', {}, [_('Managed IP')]),
+				E('th', {}, [_('Version')]),
+				E('th', {}, [_('Authorized')]),
+				E('th', {})
+			]);
+			var rows = [ hdr ];
+			var tbl = E('table', { 'class': 'table' }, rows);
+			into.appendChild(tbl);
+
+			/* The member list returns only {id: revision}; every real field
+			 * (name, managed IP, version, authorization) needs a per-member
+			 * GET. Chained rather than parallel on purpose: each call opens an
+			 * SSH tunnel, and firing 30 at once would hammer the router. Each
+			 * row is appended as it resolves so the table fills in progressively. */
+			function appendMember(i) {
+				if (i >= ids.length) return;
+				var mid = ids[i];
+				L.resolveDefault(rpcCtlGet(section, '/controller/network/' + nwid + '/member/' + mid), {}).then(function(d) {
+					var m = (d && d.code === 200 && d.body) ? d.body : {};
+					var ips = m.ipAssignments || [];
+					var ver = (m.vMajor != null && m.vMajor >= 0) ? (m.vMajor + '.' + (m.vMinor || 0)) : '-';
+
+					var nameI = E('input', { 'type': 'text', 'value': m.name || '', 'style': 'width:100%;' });
+					var authC = E('input', { 'type': 'checkbox' });
+					authC.checked = !!m.authorized;
+					var saveB = E('button', { 'class': 'cbi-button cbi-button-apply' }, [ _('Save') ]);
+					saveB.addEventListener('click', function() {
+						saveB.disabled = true;
+						var b = JSON.stringify({
+							name: nameI.value,
+							authorized: authC.checked,
+							activeBridge: !!m.activeBridge,
+							ipAssignments: ips,
+							noAutoAssignIps: !!m.noAutoAssignIps
+						});
+						L.resolveDefault(rpcMemberSet(section, nwid, mid, b), {}).then(function(r2) {
+							if (r2 && r2.code === 0) loadMembers(nwid, into);
+							else ui.addNotification(null, E('span', { 'class': 'alert-message warning' }, [ errText(r2, _('Update failed')) ]), 'warning');
+							saveB.disabled = false;
+						});
 					});
+
+					var revoke = E('button', { 'class': 'cbi-button cbi-button-remove' }, [ _('Delete') ]);
+					revoke.addEventListener('click', function() {
+						if (!confirm(_('Remove member ') + mid + ' from this network?')) return;
+						revoke.disabled = true;
+						L.resolveDefault(rpcMemberSet(section, nwid, mid, JSON.stringify({
+							name: '', authorized: false, activeBridge: false, ipAssignments: [], noAutoAssignIps: false
+						})), {}).then(function() { loadMembers(nwid, into); });
+					});
+
+					tbl.appendChild(E('tr', {}, [
+						E('td', { 'style': 'font-family:monospace;' }, [ mid ]),
+						E('td', {}, [ nameI ]),
+						/* An empty ipAssignments with version -1 means the node has
+						 * never come up on this network, so there is genuinely no
+						 * address to show. Saying so beats a blank cell that looks
+						 * like a loading failure. */
+						E('td', { 'style': 'font-family:monospace;' }, ips.length
+							? [ ips.join(', ') ]
+							: [ E('span', { 'style': 'color:orange;' }, [
+								(m.vMajor != null && m.vMajor < 0)
+									? _('never connected')
+									: _('no pool assigned')
+							]) ]),
+						E('td', {}, [ ver ]),
+						E('td', { 'style': 'text-align:center;' }, [ authC ]),
+						E('td', { 'style': 'text-align:right; white-space:nowrap;' }, [ saveB, ' ', revoke ])
+					]));
+					appendMember(i + 1);
 				});
-				return E('tr', {}, [
-					E('td', { 'style': 'font-family:monospace;' }, [ mid ]),
-					E('td', {}, [ String(body[mid]) ]),
-					E('td', { 'style': 'text-align:right;' }, [ revoke ])
-				]);
-			});
-			into.appendChild(E('table', { 'class': 'table' }, rows));
+			}
+			appendMember(0);
 		});
 	}
 
