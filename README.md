@@ -7,6 +7,10 @@ Forked from https://github.com/zhengmz/luci-app-zerotier, initially converted to
 ## Features
 
 - **Network Management** — Join/leave ZeroTier networks, configure settings
+- **Moons** — Orbit/leave private moons, with automatic persistence (no
+  zerotier package changes; driven purely through the daemon's `/moon`
+  control plane). Note that upstream ZeroTier no longer recommends private
+  moons and does not support them under its SLA.
 - **Auto NAT Clients** — Automatic firewall rule management (zerotier ↔ lan, zerotier → wan)
 - **Interface Info** — Structured display of networks, peers, and node identity
 - **Ping All** — Batch ping all IPs in connected networks, show online hosts
@@ -19,14 +23,15 @@ The custom `luci-zerotier` RPC object provides these methods (no `luci.exec` nee
 
 | Method | Access | Description |
 |---|---|---|
-| `status` | read | Service running state, NAT setting, firewall rule count |
-| `get_networks` | read | `zerotier-cli listnetworks` output |
-| `get_identity` | read | Node address from `zerotier-cli info` |
-| `get_peers` | read | `zerotier-cli listpeers` output |
+| `status` | read | Service running state + node address (one call, no `ps`/`uci` forks) |
+| `get_networks_peers` | read | `listnetworks` + `listpeers` in one call |
+| `list_moons` | read | Orbited moons plus which of them are persisted |
 | `ping_networks` | read | Concurrent ping scan of all assigned IP subnets |
 | `reload` | write | Reload firewall rules via `/etc/init.d/luci-zerotier reload` |
 | `restart_service` | write | Restart the zerotier daemon (syncs runtime state first) |
 | `sync_config` | write | Persist runtime state to the config dir; also imports a configured `local_conf_path` into it |
+| `orbit_moon` | write | Join a moon, given its ID and one of its root addresses |
+| `deorbit_moon` | write | Leave a moon |
 
 ## Installation
 
@@ -84,6 +89,134 @@ idempotent: when the desired rules already exist it does nothing (no uci
 writes, no firewall reload).
 
 ## Changelog
+
+### v2.2-r32
+
+**Moons: orbit / persist / leave**
+
+- The info page gains a **Moons** block: the orbited moons with their roots
+  and stable endpoints, an *Add Moon* form (moon ID + the address of one of
+  its roots) and a *Leave* button. Moon creation is deliberately out of
+  scope — a moon's signing key belongs with a future controller page.
+- Implemented entirely against the daemon's existing `/moon` control plane
+  (`zerotier-cli listmoons|orbit|deorbit`) plus the `moons.d` files this app
+  already mirrors. **The zerotier package is not touched.**
+- ZeroTier's exit codes are not trustworthy for the mutating calls, so both
+  are verified against reality instead:
+  - `orbit` is a **silent no-op with exit 0** when the seed is zero, so a
+    zero/non-hex seed is rejected up front;
+  - `deorbit` returns `200 deorbit OK` **even for a moon that was never
+    orbited**, so the moon list is snapshotted before and re-checked after;
+  - an orbit only materialises once a root delivers the signed world, which
+    can take a while behind a relay — so a wait expiring means *pending*,
+    never *failed*, and the UI says so instead of showing a false error;
+  - moon IDs are 10 hex digits on the `/moon/<id>` route but are reported
+    zero-padded to 16, so IDs are normalised on both sides.
+- A moon is mirrored into `config_path` as soon as its definition appears,
+  so a late-arriving definition still becomes persistent without the user
+  hunting for the *Backup Now* button on the other page.
+- The UI notes that upstream ZeroTier no longer recommends private moons and
+  does not support them under its SLA.
+
+**Correctness**
+
+- The **Port** field validated nothing (`form.Value` has no `datatype` hook
+  in luci.js), so a typo was written to UCI and reached the daemon as
+  `-p<value>`. It now checks for digits and the 1–65535 range; `0` stays
+  valid because upstream documents it as "pick a random port".
+- An unknown peer version rendered as the literal `-1.-1.-1` (ZeroTier's
+  string form, which is truthy and so survived `|| '-'`). It now shows `-`.
+- **An RPC failure was rendered as "No networks joined" / "No peers"**, so a
+  transient rpcd or daemon hiccup looked like a confident "you are not
+  connected" — exactly when it matters most. Failure, unreachable-service
+  and genuinely-empty are now three distinct states.
+
+**Efficiency** (poll intervals for networks/peers deliberately unchanged)
+
+- `status` forked six processes (`ps`, `grep`, `uci get`, `uci show`,
+  `grep`, `wc`) to deliver one boolean, two thirds of which the UI never
+  even read. Liveness is now `zerotier-one.pid` + `/proc/<pid>/comm` — zero
+  forks, and `comm` also guards against PID recycling. It carries the node
+  address too, so the settings page needs one RPC instead of two.
+- `get_networks` + `get_peers` merged into `get_networks_peers`. Both are
+  the same 1.2 MB `zerotier-one` binary, loaded and connected per call, and
+  both tables refresh on the same timer.
+- `zerotier-sync.sh` forked a `mkdir` and a `cp` **per file** (~60 forks,
+  and a full rewrite of `peers.d` to flash) on every Save&Apply, every
+  service stop and every *Backup Now*. It now copies one directory per state
+  dir, and no longer persists `peers.d` at all — it is a pure discovery
+  cache that the daemon rebuilds on every start. Stale entries there are
+  still pruned, so leftovers from earlier versions clean themselves up.
+- Service-state polling relaxed from 3s to 10s; it only changes on
+  start/stop.
+
+**Housekeeping**
+
+- `PKG_RELEASE` 32.
+- `uci-defaults` tested for `/etc/zerotier-one/local.conf`, a path that has
+  never existed on OpenWrt (the runtime dir is `/var/lib/zerotier-one`).
+- Re-added the `ZeroTier` / `Enable` / `Port` catalogue entries that had
+  dropped out of `po/zh_Hans`, so every UI string resolves from this
+  package's own catalogue.
+
+### v2.2-r31
+
+**Explicit zone devices, driven by hotplug** — returns to explicit device
+names (the pre-r23 concept) without its historical failure modes:
+
+- enumeration reads `/sys/class/net/zt*` directly — no `zerotier-cli` (its
+  port file can vanish across restarts), no readiness wait loop;
+- updates come from the net hotplug hook, not a firewall include (the
+  include re-entered fw4's lock and deadlocked — the 20s wait loop existed
+  only to paper over the boot race that caused);
+- the zone rewrite is a single atomic `uci batch`, verified and retried;
+- **no netifd involvement whatsoever** (see r30).
+
+Moved off the r23 `zt+` glob because LuCI's DeviceSelect flags it as
+"Absent Interface" — misleading enough that it got manually "fixed" into
+frozen explicit lists on production boxes. Known residue: the port-forward
+source-zone picker only renders zone *networks*, so a device-matched zone
+still shows `(empty)` there.
+
+### v2.2-r30
+
+**Reverted r29** (`revert: v2.2-r29 zone membership via netifd interfaces`).
+The design was incompatible with daemon-managed addressing and caused a
+production outage:
+
+1. On OpenWrt 24.10, netifd's device claim for the `proto=none`
+   `zerotier_<nwid>` interfaces **flushes the IPv4 addresses** the daemon had
+   assigned to the `zt` devices. The daemon does not re-apply them, so the
+   node stays unreachable until a daemon restart.
+2. During recovery, a service restart left the `zt` devices administratively
+   DOWN (daemon online, port file missing) — a "works for everyone except
+   this node" state that cost hours of misdirected firewall debugging.
+
+**Do not reintroduce netifd ownership of zerotier-managed devices.**
+
+### v2.2-r29
+
+**Zone membership via netifd interfaces** — replaced the `zt+` glob with
+per-network `proto=none` interface sections. *Reverted in r30; kept here
+because the two bugs found during its deployment shaped r31.*
+
+1. **uci list parsing**: `uci show` packs list values onto one line as
+   `network='v1' 'v2'`; the per-line `sed` never matched, verification could
+   not pass, and the post-commit reload never ran while the zone had already
+   been rewritten — leaving a zone matching nothing.
+2. **Non-atomic transition**: the zone was committed separately from its
+   membership, so any failure in between left a zone matching nothing.
+
+### v2.2-r28
+
+**Auto-expiring action feedback** — the post-action banners used
+`ui.addNotification()`, which stays until dismissed and whose Dismiss button
+depends on a `transitionend` event themes do not reliably produce
+(bootstrap implements `.fade-out` as a CSS *animation*, firing
+`animationend`; argon has no `.fade-out` rules at all, so on argon the banner
+lingered and Dismiss looked dead). All six call sites now use
+`ui.addTimeLimitedNotification()` — 5000 ms success, 10000 ms failure — whose
+removal is an unconditional `setTimeout`.
 
 ### v2.2-r27
 
