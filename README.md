@@ -6,6 +6,11 @@ Forked from https://github.com/zhengmz/luci-app-zerotier, initially converted to
 
 ## Features
 
+- **Remote Controller** — Provision and manage a ZeroTier **Controller or Moon
+  root running on a separate server** with a fixed public IP, from this
+  router's LuCI. Reaches it only through an SSH-forwarded loopback port (see
+  [Remote management](#remote-management-r33)); the controller's admin token is
+  read over SSH on demand and never stored on the router.
 - **Network Management** — Join/leave ZeroTier networks, configure settings
 - **Moons** — Orbit/leave private moons, with automatic persistence (no
   zerotier package changes; driven purely through the daemon's `/moon`
@@ -32,6 +37,16 @@ The custom `luci-zerotier` RPC object provides these methods (no `luci.exec` nee
 | `sync_config` | write | Persist runtime state to the config dir; also imports a configured `local_conf_path` into it |
 | `orbit_moon` | write | Join a moon, given its ID and one of its root addresses |
 | `deorbit_moon` | write | Leave a moon |
+| `remote_list` | read | Configured remote hosts (never returns key material) |
+| `remote_diagnose` | read | Read-only survey of a remote host over SSH |
+| `remote_ctl_get` | read | Authenticated controller API read through the SSH tunnel |
+| `remote_moon_plan` | read | The exact remote command a moon creation would run, plus a digest |
+| `remote_host_set` | write | Add/update a remote host; writes the private key to a `0600` file |
+| `remote_host_del` | write | Remove a remote host and its key file |
+| `remote_network_set` | write | Create or update a network on the remote controller |
+| `remote_network_del` | write | Delete a network on the remote controller |
+| `remote_member_set` | write | Authorize or revoke a member |
+| `remote_moon_apply` | write | Create and sign a moon; requires the digest from `remote_moon_plan` |
 
 ## Installation
 
@@ -88,7 +103,154 @@ takes, and automatically cover devices of newly joined networks. `start()` is
 idempotent: when the desired rules already exist it does nothing (no uci
 writes, no firewall reload).
 
+## Remote management (r33)
+
+A ZeroTier **Controller** and a **Moon root** both need a machine with a fixed
+public IP. Household routers rarely qualify, so this app treats the controller
+as living *somewhere else* and manages it remotely.
+
+### Why the transport is an SSH tunnel, and nothing else
+
+The controller's control plane has **no TLS** — an `https` request to the
+control port never completes. It also gates every non-loopback caller on
+`allowManagementFrom` in `local.conf`, which is **empty by default**, so a
+request from anywhere but localhost is answered `401` *regardless of a correct
+token*. In `OneService.cpp` the check is a loopback test that then falls
+through to the allowlist, which is why the token alone is never sufficient.
+
+Widening `allowManagementFrom` to `0.0.0.0/0` to make LuCI work would put the
+controller's **admin token on the wire in cleartext on every request**, from a
+residential IP that changes. So instead the router forwards a loopback port:
+
+```
+127.0.0.1:<local_port>  --SSH-->  127.0.0.1:<controller_port>
+```
+
+The daemon sees a loopback peer and short-circuits to allowed. The controller
+therefore needs **no configuration change at all** and stays firewalled to
+localhost.
+
+Measured on a host with `27893` open to the entire internet and the correct
+admin token supplied:
+
+| Request | Result |
+|---|---|
+| `GET /controller` from the internet, no token | `401` |
+| `GET /controller` from the internet, **valid admin token** | `401` |
+| `GET /controller` through the SSH tunnel | `200` + full controller response |
+
+### Consequences worth knowing
+
+- **The controller token is never stored on the router.** It is read over SSH
+  on demand for each call. There is no long-lived controller-wide admin
+  credential on the OpenWrt device to leak, back up, or render into a page.
+- **Controller API calls run `curl` locally** against the forwarded port. No
+  browser-supplied data is ever concatenated into a remote shell command; the
+  far side is a dumb TCP pipe. The only remote command this app builds is the
+  fixed moon script, which is shipped over stdin to `sh -s` and takes no
+  free-text input.
+- **Moon signing secrets never leave the root host.** `moon.json` (which holds
+  `signingKey_SECRET`) is created, signed and kept on the remote. Only the
+  secret-free signed `.moon` is read back, and only because a member cannot
+  join a moon without it.
+- **Port choice is cosmetic, not a control.** Running the controller on
+  `27893` instead of `9993` avoids advertising the service to mass scanners.
+  It does not protect the API — `allowManagementFrom` does that — but it costs
+  nothing and your nodes already use a non-default port set.
+- **Every remote call costs an SSH handshake** (1–3 s), so this page refreshes
+  on demand instead of polling the way Interface Info does.
+
+### Host prerequisites
+
+A host is manageable when it has: a fixed public IP · SSH access · a keypair
+whose public half is in the remote `authorized_keys` · **passwordless sudo**
+for that user · ZeroTier built with the controller.
+
+The controller must come from a build that actually contains one. Since 1.16.0
+the default binary ships **without** the controller, and the controller moved
+to a commercial source-available licence (`make ZT_NONFREE=1`); 1.14.2 predates
+that split and remains a single MPL/BSL binary with the controller compiled in.
+
+### dropbear constraints (on-device, verified)
+
+OpenWrt's `ssh` is dropbear, which **silently ignores** `ConnectTimeout`,
+`LogLevel`, `IdentitiesOnly` and `UserKnownHostsFile` — it prints a warning to
+stderr and continues. Two consequences are handled explicitly:
+
+- There is no connection timeout, and this image has no `timeout` applet, so
+  every ssh invocation is bounded by a hand-rolled deadline. Without it an
+  unreachable host would hang the LuCI RPC indefinitely.
+- stderr is never merged into stdout, because an ignored-option warning would
+  otherwise overwrite every value the caller parses — with exit code 0.
+
+### Known limitations
+
+- A remote host is the moon's **single root**. Additional roots are refused
+  explicitly rather than half-implemented.
+- Moon *creation* is provided; the app does not re-sign or add roots to an
+  existing moon.
+- The controller **rules editor** is out of scope by design.
+
 ## Changelog
+
+### v2.2-r33
+
+**Remote Controller / Moon management**
+
+- New **VPN → ZeroTier → Remote Controller** page. A Controller or Moon root
+  needs a fixed public IP, which a home router rarely has — so the controller
+  is treated as living on a separate server and is provisioned and managed
+  from here. The local Zerotier service is untouched.
+- Transport is an **SSH-forwarded loopback port**, and the reasoning is
+  measured rather than assumed: the control plane has no TLS, and
+  `allowManagementFrom` is empty by default, so *every* non-loopback request
+  is `401` even with a valid admin token. Verified on a host with the port
+  open to the whole internet — the token from the public internet still gets
+  `401`, the same request through the tunnel gets `200`. The controller
+  therefore needs no configuration change and stays firewalled to localhost.
+- The controller **authtoken is read over SSH on demand and never stored on
+  the router**, so the OpenWrt device holds no long-lived controller-wide
+  admin credential.
+- Controller API calls execute `curl` **locally** against the forwarded port,
+  so no browser-supplied value is ever concatenated into a remote shell
+  command. The forwarded path is confined to `/controller` and `..` plus
+  encoded separators are rejected. Every operator-supplied field is validated
+  against a strict character class (host, user, ports, key path, 16-hex
+  network ids, 10-hex member ids) and rejected rather than escaped.
+- **Networks and members** can be listed, created, renamed, toggled for
+  broadcast, deleted, and authorized/revoked — the operation set that
+  replaces ztncui.
+- **Moon creation**: `remote_moon_plan` returns the exact command that would
+  run plus a digest; `remote_moon_apply` refuses to run unless that digest is
+  echoed back, so a signing operation cannot be triggered without first
+  displaying it. `moon.json` — which holds `signingKey_SECRET` — is created,
+  signed and left on the remote host; only the secret-free signed `.moon` is
+  read back, and the UI offers it as a download for distribution.
+- The remote user's **private key is written to a `0600` file**, never into
+  UCI: `/etc/config` is world-readable and is swept into sysupgrade backups.
+  An existing key is preserved when the field is left blank, so renaming a
+  host cannot silently destroy it.
+- dropbear realities, found on-device and handled rather than assumed: it
+  silently ignores `ConnectTimeout`, `LogLevel`, `IdentitiesOnly` and
+  `UserKnownHostsFile`. So every ssh call is bounded by a hand-rolled
+  deadline (there is no `timeout` applet either, and an unreachable host would
+  otherwise hang the RPC), and stderr is kept out of stdout so a warning can
+  never overwrite parsed data while still exiting 0.
+- Each command's behaviour was established by running it, not by reading docs:
+  `initmoon` writes the world to **stdout** (it creates no file);
+  `genmoon` writes the binary `.moon` to the **current working directory**;
+  `zerotier-cli orbit` takes a **root address** as its seed, not a file, and
+  is a silent no-op when given one — which is why a brand-new moon has to ship
+  the file instead. The create route is `POST /controller/network`; the
+  documented `/controller/network/<10hex>______` is registered in the 1.14.2
+  source as `createNewNetworkOldAndBusted` and answers `400`.
+- A non-default port (`27893`, matching the secondary/tertiary pattern already
+  in use) is recommended for the remote controller. This is cosmetic — it
+  avoids advertising the service to scanners, it does not replace
+  `allowManagementFrom` as the actual control.
+- Deliberately **not** implemented: the controller rules editor (out of scope
+  by request), and multi-root moons (refused explicitly rather than
+  half-implemented).
 
 ### v2.2-r32
 
