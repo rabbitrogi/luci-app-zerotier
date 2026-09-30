@@ -141,6 +141,13 @@ case "$1" in
 			json_add_string "section" "string"
 			json_add_string "path" "string"
 		json_close_object
+		json_add_object "remote_member_list"
+			json_add_string "section" "string"
+			json_add_string "nwid" "string"
+		json_close_object
+		json_add_object "remote_peer_list"
+			json_add_string "section" "string"
+		json_close_object
 		json_add_object "remote_network_set"
 			json_add_string "section" "string"
 			json_add_string "nwid" "string"
