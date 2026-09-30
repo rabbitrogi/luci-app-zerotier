@@ -40,5 +40,16 @@
 		"depends": {
 			"acl": [ "luci-app-zerotier-rpc" ]
 		}
+	},
+	"admin/vpn/zerotier/remote": {
+		"title": "Remote Controller",
+		"order": 3,
+		"action": {
+			"type": "view",
+			"path": "zerotier/remote"
+		},
+		"depends": {
+			"acl": [ "luci-app-zerotier-rpc" ]
+		}
 	}
 }

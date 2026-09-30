@@ -120,6 +120,49 @@ case "$1" in
 		json_add_object "sync_config"
 			json_add_string "local_conf_path" "path"
 		json_close_object
+		json_add_object "remote_list"
+		json_close_object
+		json_add_object "remote_host_set"
+			json_add_string "section" "string"
+			json_add_string "name" "string"
+			json_add_string "host" "string"
+			json_add_string "port" "string"
+			json_add_string "user" "string"
+			json_add_string "controller_port" "string"
+			json_add_string "private_key" "string"
+		json_close_object
+		json_add_object "remote_host_del"
+			json_add_string "section" "string"
+		json_close_object
+		json_add_object "remote_diagnose"
+			json_add_string "section" "string"
+		json_close_object
+		json_add_object "remote_ctl_get"
+			json_add_string "section" "string"
+			json_add_string "path" "string"
+		json_close_object
+		json_add_object "remote_network_set"
+			json_add_string "section" "string"
+			json_add_string "nwid" "string"
+			json_add_string "body" "string"
+		json_close_object
+		json_add_object "remote_network_del"
+			json_add_string "section" "string"
+			json_add_string "nwid" "string"
+		json_close_object
+		json_add_object "remote_member_set"
+			json_add_string "section" "string"
+			json_add_string "nwid" "string"
+			json_add_string "member_id" "string"
+			json_add_string "body" "string"
+		json_close_object
+		json_add_object "remote_moon_plan"
+			json_add_string "section" "string"
+		json_close_object
+		json_add_object "remote_moon_apply"
+			json_add_string "section" "string"
+			json_add_string "confirm" "string"
+		json_close_object
 		json_add_object "restart_service"
 		json_close_object
 		json_dump
@@ -643,6 +686,182 @@ case "$1" in
 				fi
 
 				json_dump
+				;;
+			remote_list)
+				# Read-only: enumerate configured remote hosts. Key material is
+				# never returned -- only whether a key file exists.
+				json_init
+				json_add_array "hosts"
+				for _s in $(uci -q show zerotier 2>/dev/null | sed -n 's/^zerotier\.\([^.=]*\)=remote$/\1/p'); do
+					_h=$(uci -q get "zerotier.$_s.host")
+					[ -n "$_h" ] || continue
+					_kp=$(uci -q get "zerotier.$_s.key_path")
+					[ -n "$_kp" ] || _kp="/etc/zerotier/remote/$_s.key"
+					json_add_object ""
+					json_add_string "section" "$_s"
+					json_add_string "name" "$(uci -q get "zerotier.$_s.name" || echo "$_s")"
+					json_add_string "host" "$_h"
+					json_add_string "port" "$(uci -q get "zerotier.$_s.port" || echo 22)"
+					json_add_string "user" "$(uci -q get "zerotier.$_s.user" || echo root)"
+					json_add_string "controller_port" "$(uci -q get "zerotier.$_s.controller_port" || echo 9993)"
+					json_add_string "key_path" "$_kp"
+					if [ -f "$_kp" ]; then
+						json_add_boolean "key_present" 1
+					else
+						json_add_boolean "key_present" 0
+					fi
+					json_close_object
+				done
+				json_close_array
+				json_dump
+				;;
+			remote_host_set)
+				# The private key is written to a 0600 file, never into UCI:
+				# /etc/config is world-readable and is swept into sysupgrade
+				# backups, whereas a key file can be excluded from keep.d.
+				read -r input
+				json_load "$input" 2>/dev/null
+				json_get_var _sect section 2>/dev/null
+				json_get_var _hname name 2>/dev/null
+				json_get_var _rhost host 2>/dev/null
+				json_get_var _rport port 2>/dev/null
+				json_get_var _ruser user 2>/dev/null
+				json_get_var _cport controller_port 2>/dev/null
+				json_get_var _pkey private_key 2>/dev/null
+				unset input
+
+				json_init
+
+				case "$_sect" in
+					''|*[!A-Za-z0-9_]*) _err="invalid section name" ;;
+					*) _err="" ;;
+				esac
+				[ -z "$_err" ] || { json_add_int "code" 1; json_add_string "error" "$_err"; json_dump; return; }
+
+				case "$_rhost" in
+					''|*[!A-Za-z0-9.:_-]*) _err="host must be a hostname or IP literal" ;;
+					*) case "$_rhost" in *[!0-9A-Za-z]*) _err="" ;; *) _err="host must contain a letter or digit" ;; esac ;;
+				esac
+				[ -z "$_err" ] || { json_add_int "code" 1; json_add_string "error" "$_err"; json_dump; return; }
+
+				case "$_ruser" in
+					''|[a-zA-Z_]*) case "$_ruser" in *[!a-zA-Z0-9_-]*) _err="invalid ssh user" ;; esac ;;
+					*) _err="invalid ssh user" ;;
+				esac
+				[ -z "$_err" ] || { json_add_int "code" 1; json_add_string "error" "$_err"; json_dump; return; }
+
+				for _p in "$_rport" "$_cport"; do
+					case "$_p" in
+						''|*[!0-9]*) _err="ports must be numeric" ;;
+						*) [ "$_p" -ge 1 ] 2>/dev/null && [ "$_p" -le 65535 ] 2>/dev/null || _err="port out of range" ;;
+					esac
+					[ -z "$_err" ] || { json_add_int "code" 1; json_add_string "error" "$_err"; json_dump; return; }
+				done
+
+				_rport=${_rport:-22}
+				_ruser=${_ruser:-root}
+				_cport=${_cport:-9993}
+				_hname=${_hname:-$_sect}
+				_kp="/etc/zerotier/remote/$_sect.key"
+
+				mkdir -p /etc/zerotier/remote || { json_add_int "code" 1; json_add_string "error" "cannot create /etc/zerotier/remote"; json_dump; return; }
+				chmod 700 /etc/zerotier/remote 2>/dev/null
+
+				# An existing key is preserved when the field is left blank, so
+				# editing a host's name does not silently destroy its key.
+				if [ -n "$_pkey" ]; then
+					case "$_pkey" in
+						*"PRIVATE KEY"*) ;;
+						*) json_add_int "code" 1; json_add_string "error" "that does not look like a private key"; json_dump; return ;;
+					esac
+					(umask 077; printf '%s\n' "$_pkey" > "$_kp") || { json_add_int "code" 1; json_add_string "error" "could not write the key file"; json_dump; return; }
+					chmod 600 "$_kp" 2>/dev/null
+				fi
+
+				uci -q delete "zerotier.$_sect" 2>/dev/null
+				uci set "zerotier.$_sect=remote"
+				uci set "zerotier.$_sect.name=$_hname"
+				uci set "zerotier.$_sect.host=$_rhost"
+				uci set "zerotier.$_sect.port=$_rport"
+				uci set "zerotier.$_sect.user=$_ruser"
+				uci set "zerotier.$_sect.controller_port=$_cport"
+				uci set "zerotier.$_sect.key_path=$_kp"
+				uci commit zerotier || { json_add_int "code" 1; json_add_string "error" "uci commit failed"; json_dump; return; }
+
+				json_add_int "code" 0
+				json_add_string "key_path" "$_kp"
+				json_dump
+				;;
+			remote_host_del)
+				read -r input
+				json_load "$input" 2>/dev/null
+				json_get_var _sect section 2>/dev/null
+				unset input
+
+				json_init
+				case "$_sect" in
+					''|*[!A-Za-z0-9_]*) json_add_int "code" 1; json_add_string "error" "invalid section name"; json_dump; return ;;
+				esac
+				_kp=$(uci -q get "zerotier.$_sect.key_path")
+				[ -n "$_kp" ] || _kp="/etc/zerotier/remote/$_sect.key"
+				# Only unlink inside our own managed directory.
+				case "$_kp" in
+					/etc/zerotier/remote/*.key) [ -f "$_kp" ] && rm -f "$_kp" ;;
+				esac
+				uci -q delete "zerotier.$_sect"
+				uci commit zerotier
+				json_add_int "code" 0
+				json_dump
+				;;
+			remote_diagnose|remote_ctl_get|remote_network_set|remote_network_del|remote_member_set|remote_moon_plan|remote_moon_apply)
+				# Thin delegation to zerotier-remote.sh, which owns all SSH,
+				# tunnel and validation logic. Its stdout is already the JSON we
+				# return verbatim, so nothing is re-encoded here.
+				read -r input
+				json_load "$input" 2>/dev/null
+				json_get_var _sect section 2>/dev/null
+				json_get_var _path path 2>/dev/null
+				json_get_var _nwid nwid 2>/dev/null
+				json_get_var _body body 2>/dev/null
+				json_get_var _mid member_id 2>/dev/null
+				json_get_var _cf confirm 2>/dev/null
+				unset input
+
+				case "$2" in
+					remote_diagnose)    _args="diagnose $_sect" ;;
+					remote_ctl_get)     _args="ctl-get $_sect $_path" ;;
+					remote_network_set) _args="ctl-network-set $_sect $_nwid $_body" ;;
+					remote_network_del) _args="ctl-network-del $_sect $_nwid" ;;
+					remote_member_set)  _args="ctl-member-set $_sect $_nwid $_mid $_body" ;;
+					remote_moon_plan)   _args="moon-plan $_sect" ;;
+					remote_moon_apply)  _args="moon-apply $_sect $_cf" ;;
+				esac
+
+				if [ ! -x /usr/bin/zerotier-remote.sh ]; then
+					json_init
+					json_add_int "code" 1
+					json_add_string "error" "zerotier-remote.sh is missing"
+					json_dump
+					return
+				fi
+
+				# Intentional word splitting: _args is a command line built
+				# from validated fields, and the helper re-validates each one.
+				# shellcheck disable=SC2086
+				_out=$(/usr/bin/zerotier-remote.sh $_args 2>/dev/null)
+				_rc=$?
+				if [ -z "$_out" ]; then
+					json_init
+					json_add_int "code" 1
+					if [ "$_rc" -eq 124 ]; then
+						json_add_string "error" "the remote host did not respond in time"
+					else
+						json_add_string "error" "remote helper failed (rc=$_rc)"
+					fi
+					json_dump
+					return
+				fi
+				printf '%s\n' "$_out"
 				;;
 			*)
 				# Invalid method - return error

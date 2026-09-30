@@ -7,7 +7,11 @@
 					"status",
 					"get_networks_peers",
 					"list_moons",
-					"ping_networks"
+					"ping_networks",
+					"remote_list",
+					"remote_diagnose",
+					"remote_ctl_get",
+					"remote_moon_plan"
 				]
 			}
 		},
@@ -18,7 +22,13 @@
 					"restart_service",
 					"sync_config",
 					"orbit_moon",
-					"deorbit_moon"
+					"deorbit_moon",
+					"remote_host_set",
+					"remote_host_del",
+					"remote_network_set",
+					"remote_network_del",
+					"remote_member_set",
+					"remote_moon_apply"
 				]
 			}
 		}
