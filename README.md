@@ -40,6 +40,8 @@ The custom `luci-zerotier` RPC object provides these methods (no `luci.exec` nee
 | `remote_list` | read | Configured remote hosts (never returns key material) |
 | `remote_diagnose` | read | Read-only survey of a remote host over SSH |
 | `remote_ctl_get` | read | Authenticated controller API read through the SSH tunnel |
+| `remote_member_list` | read | Every member of one network in a single tunnel round trip |
+| `remote_peer_list` | read | The controller's live `/peer` list (status, version, latency, paths) |
 | `remote_moon_plan` | read | The exact remote command a moon creation would run, plus a digest |
 | `remote_host_set` | write | Add/update a remote host; writes the private key to a `0600` file |
 | `remote_host_del` | write | Remove a remote host and its key file |
@@ -192,6 +194,73 @@ stderr and continues. Two consequences are handled explicitly:
 - The controller **rules editor** is out of scope by design.
 
 ## Changelog
+
+### v2.2-r35
+
+**ztncui-style inline member table, live peer state**
+
+- The members table is now **edited in place**, matching the ztncui interface the
+  user relies on daily. Name, authorized, active bridge and managed IP each commit
+  on blur or Enter (checkboxes on click) and post **only the changed field**; the
+  per-row Save button is gone. The controller merges presence-checked scalars, and
+  ztncui posts single fields against this same controller in production use, so a
+  partial body is the correct shape rather than a shortcut.
+- Two live columns were added, which is the part that needed a new transport:
+  **Peer status** (`ONLINE (v1.16.2)` / `OFFLINE` / `CONTROLLER`) and
+  **Peer address / latency** (`49.232.226.145/55878 (13 ms)`), both derived from
+  the controller's `/peer` endpoint.
+- **The r34 N+1 was the reason this release was possible.** Member detail cannot
+  be batched by the controller: `GET /controller/network/<nwid>` has **no
+  `members` key** (verified against the 1.14.2 on-disk network JSON and the
+  service schema), so the list endpoint returns only `{id: revision}` and each
+  member needs its own fetch. `remote_member_list` collapses the SSH cost to
+  **two** connections -- read the auth token once, open the tunnel once, then
+  curl the map and every member over loopback -- and `remote_peer_list` adds one
+  more call, issued in parallel with it.
+  Measured on a 31-member test network, one `member-list` call takes **4.0s**
+  (reproduced twice) against **4.5s** for the 32 `ctl-get` calls r34 made, so the
+  batching is only **1.1x** on a fast link -- and that ratio is *not* the point.
+  Timing the phases shows why: the tunnel is up in 0.03s and the cost is
+  elsewhere, in 32 sequential loopback HTTP requests at ~120ms each. The
+  handshakes that r34's 30-90s estimate assumed do not dominate on a fast path.
+  The win is expected to be larger on the real target, where each SSH handshake
+  runs through dropbear on a router CPU over a WAN round trip, but **that has not
+  been measured on-device** and the earlier 30-90s figure was an estimate, not a
+  measurement. Two further costs are visible and worth naming: about 1.2s of the
+  4.0s is the HTTP floor, and roughly 2.8s is shell subprocess overhead from
+  `rfetch` forking `curl` plus `tail`/`tr`/`sed` per response. Collapsing those
+  three pipelines into one is the obvious r36 follow-up.
+- A member row is not a self-delimiting string. `member-list` embeds each
+  controller response body raw into one array, so every body is first checked to
+  be a **complete** JSON object by an awk validator that tracks string and escape
+  state and requires containers to close **in type and in order**. A plain
+  first/last-character test is not enough: a body truncated mid-array, a `]`
+  closing a `{`, or a trailing `}` all pass it and would corrupt every other
+  member's row. A body that fails is skipped rather than embedded -- a missing
+  row is recoverable, an unparseable table is not.
+- Online state is `at least one path with expired !== true`. A peer absent from
+  the list and a peer whose paths have all expired both mean not currently
+  connected, and both render `OFFLINE`. The controller's own node is detected as
+  the **first 10 hex of the nwid** and checked *before* the online test, because a
+  node never peers with itself and would otherwise always show `OFFLINE`.
+- `versionMajor` is `-1` for PLANET and root peers, and `latency` is `0` or
+  negative when unmeasured. Both render as absent -- `ONLINE` with no version, and
+  `(-)` rather than `0 ms` -- instead of a broken version string.
+- A failed `/peer` call renders `-` for every row plus a muted note. It does
+  **not** render the table as all-`OFFLINE`, which would invent state out of a
+  transport error.
+- The table gained a **client-side filter** over name, address and managed IP with
+  a shown/total counter. It filters the already-fetched array and never re-queries,
+  because a keystroke that costs an SSH handshake would be unusable.
+- The network name is renamed in place via a glyph, committing `{"name": ...}` on
+  blur or Enter, instead of only persisting when the whole network form is saved.
+- Member IDs taken from the controller are re-validated as exactly 10 hex digits
+  before reaching a URL, and `member-list` refuses a non-16-hex nwid. The map is
+  remote-controlled input and this script runs as root, so the URL safety rests on
+  that validation rather than on the extraction upstream of it.
+- Both new subcommands issue **only GET**, and the new `rfetch` helper has its
+  method pinned so it cannot grow into a write path. `rctl` was deliberately left
+  untouched so the r33 `ctl-get` path stays exactly what was proven.
 
 ### v2.2-r34
 
