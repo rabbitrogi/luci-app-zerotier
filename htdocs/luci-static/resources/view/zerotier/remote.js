@@ -29,6 +29,8 @@ var rpcCtlGet = rpc.declare({ object: 'luci-zerotier', method: 'remote_ctl_get',
 var rpcNetSet = rpc.declare({ object: 'luci-zerotier', method: 'remote_network_set', params: [ 'section', 'nwid', 'body' ] });
 var rpcNetDel = rpc.declare({ object: 'luci-zerotier', method: 'remote_network_del', params: [ 'section', 'nwid' ] });
 var rpcMemberSet = rpc.declare({ object: 'luci-zerotier', method: 'remote_member_set', params: [ 'section', 'nwid', 'member_id', 'body' ] });
+var rpcMemberList = rpc.declare({ object: 'luci-zerotier', method: 'remote_member_list', params: [ 'section', 'nwid' ] });
+var rpcPeerList  = rpc.declare({ object: 'luci-zerotier', method: 'remote_peer_list',  params: [ 'section' ] });
 var rpcMoonPlan = rpc.declare({ object: 'luci-zerotier', method: 'remote_moon_plan', params: [ 'section' ] });
 var rpcMoonApply = rpc.declare({ object: 'luci-zerotier', method: 'remote_moon_apply', params: [ 'section', 'confirm' ] });
 
@@ -194,7 +196,49 @@ function networksPanel(section) {
 	}
 
 	function netRow(nw) {
-		var name = E('input', { 'type': 'text', 'value': nw.name || '', 'style': 'width:100%;' });
+		/* ztncui-style rename: the name is a plain span with an edit glyph;
+		 * the whole-form Save below commits the last accepted value via
+		 * netName, not a live input. */
+		var netName = nw.name || '';
+		var nameWrap = E('span', { 'style': 'white-space:nowrap;' }, []);
+		var nameBusy = false, nameAfterKey = false;
+		var nameEdit = E('a', {
+			'href': '#', 'title': _('Rename'),
+			'style': 'margin-left:6px; text-decoration:none; cursor:pointer;',
+			'click': function(ev) { ev.preventDefault(); startRename(); }
+		}, [ '✎' ]);
+		function drawNameSpan() {
+			while (nameWrap.firstChild) nameWrap.removeChild(nameWrap.firstChild);
+			nameWrap.appendChild(E('span', {}, [ netName ]));
+			nameWrap.appendChild(nameEdit);
+		}
+		function startRename() {
+			if (nameBusy) return;
+			while (nameWrap.firstChild) nameWrap.removeChild(nameWrap.firstChild);
+			var inp = E('input', { 'type': 'text', 'value': netName, 'style': 'width:150px;' });
+			nameWrap.appendChild(inp);
+			if (inp.focus) inp.focus();
+			function close() { nameBusy = false; drawNameSpan(); }
+			function doCommit() {
+				var v = inp.value;
+				if (v === netName) { close(); return; }
+				nameBusy = true;
+				L.resolveDefault(rpcNetSet(section, nw.nwid, JSON.stringify({ name: v })), {}).then(function(res) {
+					if (res && res.code === 200) netName = v;
+					else ui.addNotification(null, E('span', { 'class': 'alert-message warning' }, [ errText(res, _('Rename failed')) ]), 'warning');
+					close();
+				});
+			}
+			inp.addEventListener('keydown', function(ev) {
+				if (ev.keyCode === 13) { ev.preventDefault(); nameAfterKey = true; doCommit(); }
+				else if (ev.keyCode === 27) { inp.value = netName; close(); }
+			});
+			inp.addEventListener('blur', function() {
+				if (nameAfterKey) { nameAfterKey = false; return; }
+				doCommit();
+			});
+		}
+		drawNameSpan();
 		var bcast = E('input', { 'type': 'checkbox' });
 		bcast.checked = !!nw.enableBroadcast;
 
@@ -311,8 +355,8 @@ function networksPanel(section) {
 			 * The object form is required. The published tutorial shows the
 			 * string "zt", but the schema defines an object and the daemon
 			 * ignores a wrongly-typed field without complaint. */
-			var body = JSON.stringify({
-				name: name.value,
+		var body = JSON.stringify({
+			name: netName,
 				enableBroadcast: bcast.checked,
 				private: priv.checked,
 				mtu: parseInt(mtu.value, 10) || 2800,
@@ -394,7 +438,7 @@ function networksPanel(section) {
 				'style': 'table-layout:fixed; width:100%;'
 			}, [ E('tr', {}, [
 				E('td', { 'style': 'width:170px; font-family:monospace; white-space:nowrap;' }, [ nw.nwid ]),
-				E('td', { 'style': 'width:auto;' }, [ name ]),
+				E('td', { 'style': 'width:auto;' }, [ nameWrap ]),
 				E('td', { 'style': 'width:90px; text-align:center; white-space:nowrap;' }, [ bcast ]),
 				E('td', { 'style': 'width:280px; text-align:right;' }, [
 					E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:4px; justify-content:flex-end;' },
@@ -407,13 +451,33 @@ function networksPanel(section) {
 
 	function loadMembers(nwid, into) {
 		into.appendChild(E('div', { 'style': 'color:orange;' }, [ _('Loading...') ]));
-		L.resolveDefault(rpcCtlGet(section, '/controller/network/' + nwid + '/member'), {}).then(function(res) {
+		/* remote_member_list collapses what used to be an N+1 chain (one
+		 * SSH round-trip per member: 30-90s for a 29-member network) into
+		 * one call, and remote_peer_list supplies live online / version /
+		 * path state in a second. Two parallel calls are fine; the old
+		 * comment's warning was about firing thirty at once. */
+		Promise.all([
+			L.resolveDefault(rpcMemberList(section, nwid), {}),
+			L.resolveDefault(rpcPeerList(section), {})
+		]).then(function(r) {
+			var mres = r[0], pres = r[1];
+			/* remote_ctl_get reports the tunnelled HTTP status (200) while
+			 * remote_member_set / the batch list calls report the helper's
+			 * own 0-for-success; both conventions live on this page, so
+			 * accept either. */
+			function okList(res) {
+				return !!(res && (res.code === 0 || res.code === 200) && Array.isArray(res.body));
+			}
+			var mok = okList(mres), pok = okList(pres);
 			while (into.firstChild) into.removeChild(into.firstChild);
-			var body = (res && res.body) || {};
-			if (res && res.code !== 200) {
-				into.appendChild(E('div', { 'style': 'color:red;' }, [ errText(res, _('Could not list members')) ]));
+			if (!mok) {
+				into.appendChild(E('div', { 'style': 'color:red;' }, [ errText(mres, _('Could not list members')) ]));
 				return;
 			}
+			/* A failed peer list must not fabricate an all-OFFLINE table:
+			 * render the members with '-' and a muted note instead. */
+			if (!pok)
+				into.appendChild(E('div', { 'style': 'color:#888; font-size:12px; margin-bottom:4px;' }, [ _('Peer status unavailable') ]));
 			var idI = E('input', { 'type': 'text', 'placeholder': _('Node address (10 hex)'), 'style': 'width:180px;' });
 			var authBtn = E('button', { 'class': 'cbi-button cbi-button-add' }, [ _('Authorize') ]);
 			authBtn.addEventListener('click', function() {
@@ -433,90 +497,251 @@ function networksPanel(section) {
 
 			into.appendChild(E('div', { 'style': 'display:flex; gap:6px; align-items:center; margin:6px 0;' }, [ idI, authBtn ]));
 
-			var ids = Object.keys(body);
-			if (!ids.length) {
-				into.appendChild(E('div', { 'style': 'color:orange;' }, [ _('No members have joined this network yet.') ]));
-				return;
-			}
-			var hdr = E('tr', {}, [
-				E('th', { 'style': 'width:130px;' }, [_('Node address')]),
-				E('th', {}, [_('Name')]),
-				E('th', { 'style': 'width:150px;' }, [_('Managed IP')]),
-				E('th', { 'style': 'width:80px;' }, [_('Version')]),
-				E('th', { 'style': 'width:100px; text-align:center;' }, [_('Authorized')]),
-				E('th', { 'style': 'width:150px;' }, [])
-			]);
-			var rows = [ hdr ];
-			var tbl = E('table', { 'class': 'table', 'style': 'table-layout:fixed; width:100%;' }, rows);
-			into.appendChild(tbl);
+		/* The member objects are the cached model: every inline edit commits
+		 * against its entry here and the filter re-renders from it, so no
+		 * keystroke ever costs an SSH round-trip. */
+		var membersArr = mres.body;
+		if (!membersArr.length) {
+			into.appendChild(E('div', { 'style': 'color:orange;' }, [ _('No members have joined this network yet.') ]));
+			return;
+		}
 
-			/* The member list returns only {id: revision}; every real field
-			 * (name, managed IP, version, authorization) needs a per-member
-			 * GET. Chained rather than parallel on purpose: each call opens an
-			 * SSH tunnel, and firing 30 at once would hammer the router. Each
-			 * row is appended as it resolves so the table fills in progressively. */
-			function appendMember(i) {
-				if (i >= ids.length) return;
-				var mid = ids[i];
-				L.resolveDefault(rpcCtlGet(section, '/controller/network/' + nwid + '/member/' + mid), {}).then(function(d) {
-					var m = (d && d.code === 200 && d.body) ? d.body : {};
-					var ips = m.ipAssignments || [];
-					var ver = (m.vMajor != null && m.vMajor >= 0) ? (m.vMajor + '.' + (m.vMinor || 0)) : '-';
+		/* The controller's own node address is the first 10 hex of the nwid,
+		 * which is why e.g. f08c171006 shows as CONTROLLER. This must be
+		 * checked before the online test: a node never peers with itself,
+		 * so the controller is absent from the peer list and would
+		 * otherwise render OFFLINE. */
+		var controllerAddr = nwid.substring(0, 10);
+		var peerMap = {};
+		if (pok) pres.body.forEach(function(p) { if (p && p.address) peerMap[p.address] = p; });
 
-					var nameI = E('input', { 'type': 'text', 'value': m.name || '', 'style': 'width:100%;' });
-					var authC = E('input', { 'type': 'checkbox' });
-					authC.checked = !!m.authorized;
-					var saveB = E('button', { 'class': 'cbi-button cbi-button-apply' }, [ _('Save') ]);
-					saveB.addEventListener('click', function() {
-						saveB.disabled = true;
-						var b = JSON.stringify({
-							name: nameI.value,
-							authorized: authC.checked,
-							activeBridge: !!m.activeBridge,
-							ipAssignments: ips,
-							noAutoAssignIps: !!m.noAutoAssignIps
-						});
-						L.resolveDefault(rpcMemberSet(section, nwid, mid, b), {}).then(function(r2) {
-							if (r2 && r2.code === 0) loadMembers(nwid, into);
-							else ui.addNotification(null, E('span', { 'class': 'alert-message warning' }, [ errText(r2, _('Update failed')) ]), 'warning');
-							saveB.disabled = false;
-						});
-					});
+		/* Online = at least one non-expired physical path. An absent peer
+		 * and a peer whose paths have all expired are both OFFLINE. */
+		function isOnline(p) {
+			if (!p || !Array.isArray(p.paths)) return false;
+			for (var i = 0; i < p.paths.length; i++)
+				if (p.paths[i] && p.paths[i].expired !== true) return true;
+			return false;
+		}
+		/* PLANET and root peers legitimately report versionMajor -1
+		 * ("version":"-1.-1.-1"); a negative or missing major means "no
+		 * version", not a version to render. */
+		function peerVersion(p) {
+			if (!p || p.versionMajor == null || p.versionMajor < 0) return null;
+			return 'v' + p.versionMajor + '.' + p.versionMinor + '.' + (p.versionRev || 0);
+		}
+		function pickPath(p) {
+			if (!p || !Array.isArray(p.paths) || !p.paths.length) return null;
+			var i, pth = null;
+			for (i = 0; i < p.paths.length; i++) if (p.paths[i] && p.paths[i].preferred) { pth = p.paths[i]; break; }
+			if (!pth) for (i = 0; i < p.paths.length; i++) if (p.paths[i] && p.paths[i].active) { pth = p.paths[i]; break; }
+			return pth || p.paths[0];
+		}
 
-					var revoke = E('button', { 'class': 'cbi-button cbi-button-remove' }, [ _('Delete') ]);
-					revoke.addEventListener('click', function() {
-						if (!confirm(_('Remove member ') + mid + ' from this network?')) return;
-						revoke.disabled = true;
-						L.resolveDefault(rpcMemberSet(section, nwid, mid, JSON.stringify({
-							name: '', authorized: false, activeBridge: false, ipAssignments: [], noAutoAssignIps: false
-						})), {}).then(function() { loadMembers(nwid, into); });
-					});
+		var filterI = E('input', { 'type': 'text', 'placeholder': _('Filter by name, address or IP'), 'style': 'width:220px; margin-right:8px;' });
+		var counterHost = E('span', { 'style': 'color:#888; font-size:12px;' }, []);
+		var tbody = E('tbody', {});
 
-					tbl.appendChild(E('tr', {}, [
-						E('td', { 'style': 'font-family:monospace;' }, [ mid ]),
-						E('td', { 'style': 'min-width:150px;' }, [ nameI ]),
-						/* An empty ipAssignments with version -1 means the node has
-						 * never come up on this network, so there is genuinely no
-						 * address to show. Saying so beats a blank cell that looks
-						 * like a loading failure. */
-						E('td', { 'style': 'font-family:monospace;' }, ips.length
-							? [ ips.join(', ') ]
-							: [ E('span', { 'style': 'color:orange;' }, [
-								(m.vMajor != null && m.vMajor < 0)
-									? _('never connected')
-									: _('no pool assigned')
-							]) ]),
-						E('td', {}, [ ver ]),
-						E('td', { 'style': 'text-align:center;' }, [ authC ]),
-						E('td', { 'style': 'text-align:right;' }, [
-							E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:4px; justify-content:flex-end;' },
-								[ saveB, revoke ])
-						])
-					]));
-					appendMember(i + 1);
+		/* Pending / saved / failed on a narrow column: signal with the input
+		 * border and clear it shortly after, rather than a status element. */
+		function flashBorder(el, color) {
+			el.style.borderColor = color;
+			setTimeout(function() { el.style.borderColor = ''; }, 1500);
+		}
+		function setCounter(shown) {
+			while (counterHost.firstChild) counterHost.removeChild(counterHost.firstChild);
+			counterHost.appendChild(E('span', {}, [ shown + ' / ' + membersArr.length + ' ' + _('members') ]));
+		}
+
+		/* Inline edits post single-field bodies on purpose: the controller
+		 * merges presence-checked scalars, and the ztncui reference UI posts
+		 * single fields against this same controller in production use. */
+		function memberRow(m) {
+			var mid = m.id;
+			var rmBusy = false;
+			var rm = E('a', {
+				'href': '#', 'title': _('Remove'),
+				'style': 'cursor:pointer; text-decoration:none;',
+				'click': function(ev) {
+					ev.preventDefault();
+					if (rmBusy) return;
+					if (!confirm(_('Remove member ') + mid + ' from this network?')) return;
+					rmBusy = true;
+					L.resolveDefault(rpcMemberSet(section, nwid, mid, JSON.stringify({
+						name: '', authorized: false, activeBridge: false, ipAssignments: [], noAutoAssignIps: false
+					})), {}).then(function() { loadMembers(nwid, into); });
+				}
+			}, [ '✕' ]);
+
+			var nameI = E('input', { 'type': 'text', 'value': m.name || '', 'style': 'width:100%; box-sizing:border-box;' });
+			var nameBusy = false, nameAfterKey = false;
+			function commitName() {
+				var v = nameI.value;
+				if (v === (m.name || '') || nameBusy) return;
+				nameBusy = true;
+				nameI.style.borderColor = 'orange';
+				L.resolveDefault(rpcMemberSet(section, nwid, mid, JSON.stringify({ name: v })), {}).then(function(r2) {
+					nameBusy = false;
+					if (r2 && r2.code === 0) { m.name = v; flashBorder(nameI, 'green'); }
+					else {
+						flashBorder(nameI, 'red');
+						ui.addNotification(null, E('span', { 'class': 'alert-message warning' }, [ errText(r2, _('Update failed')) ]), 'warning');
+					}
 				});
 			}
-			appendMember(0);
+			nameI.addEventListener('blur', function() {
+				if (nameAfterKey) { nameAfterKey = false; return; }
+				commitName();
+			});
+			nameI.addEventListener('keydown', function(ev) {
+				if (ev.keyCode === 13) { ev.preventDefault(); nameAfterKey = true; commitName(); }
+				else if (ev.keyCode === 27) nameI.value = m.name || '';
+			});
+
+			function checkboxTd(field) {
+				var c = E('input', { 'type': 'checkbox' });
+				c.checked = !!m[field];
+				var busy = false;
+				c.addEventListener('change', function() {
+					if (busy) return;
+					busy = true;
+					var b = {};
+					b[field] = c.checked;
+					L.resolveDefault(rpcMemberSet(section, nwid, mid, JSON.stringify(b)), {}).then(function(r2) {
+						busy = false;
+						if (r2 && r2.code === 0) m[field] = c.checked;
+						else {
+							c.checked = !!m[field];
+							ui.addNotification(null, E('span', { 'class': 'alert-message warning' }, [ errText(r2, _('Update failed')) ]), 'warning');
+						}
+					});
+				});
+				return E('td', { 'style': 'width:9%; text-align:center;' }, [ c ]);
+			}
+
+			var ipTd = E('td', { 'style': 'width:13%; font-family:monospace; white-space:nowrap;' }, []);
+			var ipBusy = false, ipEditing = false;
+			function drawIp() {
+				while (ipTd.firstChild) ipTd.removeChild(ipTd.firstChild);
+				var ips = m.ipAssignments || [];
+				var clickable = E('span', { 'style': 'cursor:pointer;' }, ips.length
+					? [ ips.join(', ') ]
+					: [ E('span', { 'style': 'color:orange;' }, [
+						/* Empty ipAssignments with version -1 means the node has
+						 * never come up on this network; a positive version with
+						 * no IP means the network has no pool. */
+						(m.vMajor != null && m.vMajor < 0) ? _('never connected') : _('no pool assigned')
+					]) ]);
+				ipTd.appendChild(clickable);
+			}
+			function startIpEdit() {
+				if (ipBusy) return;
+				ipEditing = true;
+				while (ipTd.firstChild) ipTd.removeChild(ipTd.firstChild);
+				var inp = E('input', { 'type': 'text', 'value': (m.ipAssignments || []).join(', '), 'style': 'width:100%; box-sizing:border-box; font-family:monospace;' });
+				ipTd.appendChild(inp);
+				if (inp.focus) inp.focus();
+				var afterKey = false;
+				function close() { ipEditing = false; drawIp(); }
+				function doCommit() {
+					var raw = inp.value.trim(), arr = [], i;
+					if (raw !== '') {
+						arr = raw.split(',');
+						for (i = 0; i < arr.length; i++) {
+							arr[i] = arr[i].trim();
+							if (!isIp(arr[i])) {
+								ui.addNotification(null, E('span', { 'class': 'alert-message warning' }, [ _('Managed IPs must be IPv4 addresses, comma-separated') ]), 'warning');
+								return;
+							}
+						}
+					}
+					if (arr.join(',') === (m.ipAssignments || []).join(',') || ipBusy) { close(); return; }
+					ipBusy = true;
+					inp.style.borderColor = 'orange';
+					L.resolveDefault(rpcMemberSet(section, nwid, mid, JSON.stringify({ ipAssignments: arr })), {}).then(function(r2) {
+						ipBusy = false;
+						if (r2 && r2.code === 0) { m.ipAssignments = arr; close(); }
+						else {
+							flashBorder(inp, 'red');
+							ui.addNotification(null, E('span', { 'class': 'alert-message warning' }, [ errText(r2, _('Update failed')) ]), 'warning');
+						}
+					});
+				}
+				inp.addEventListener('blur', function() {
+					if (afterKey) { afterKey = false; return; }
+					if (ipEditing) doCommit();
+				});
+				inp.addEventListener('keydown', function(ev) {
+					if (ev.keyCode === 13) { ev.preventDefault(); afterKey = true; doCommit(); }
+					else if (ev.keyCode === 27) { inp.value = (m.ipAssignments || []).join(', '); close(); }
+				});
+			}
+			ipTd.addEventListener('click', function() { if (!ipEditing) startIpEdit(); });
+			drawIp();
+
+			function statusContent() {
+				if (!pok) return E('span', { 'style': 'color:#888;' }, [ '-' ]);
+				if (mid === controllerAddr) return E('span', { 'style': 'color:green; font-weight:bold;' }, [ 'CONTROLLER' ]);
+				var p = peerMap[mid];
+				if (!isOnline(p)) return E('span', { 'style': 'color:red; font-weight:bold;' }, [ 'OFFLINE' ]);
+				var v = peerVersion(p);
+				return E('span', { 'style': 'color:green; font-weight:bold;' }, [ 'ONLINE' + (v ? ' (' + v + ')' : '') ]);
+			}
+			function addrContent() {
+				if (!pok) return '-';
+				var p = peerMap[mid];
+				var pth = pickPath(p);
+				if (!pth || !pth.address) return '-';
+				/* latency 0 means "not measured yet", not "0 ms" -- render (-). */
+				return pth.address + ((p.latency > 0) ? ' (' + p.latency + ' ms)' : ' (-)');
+			}
+
+			return E('tr', {}, [
+				E('td', { 'style': 'width:34px; text-align:center;' }, [ rm ]),
+				E('td', { 'style': 'width:19%;' }, [ nameI ]),
+				E('td', { 'style': 'width:12%; font-family:monospace; white-space:nowrap;' }, [
+					E('code', {}, [ E('a', { 'href': '#', 'click': function(ev) { ev.preventDefault(); } }, [ mid ]) ])
+				]),
+				checkboxTd('authorized'),
+				checkboxTd('activeBridge'),
+				ipTd,
+				E('td', { 'style': 'width:12%;' }, [ statusContent() ]),
+				E('td', { 'style': 'width:26%; font-family:monospace;' }, [ addrContent() ])
+			]);
+		}
+
+		function drawRows() {
+			while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+			var q = filterI.value ? filterI.value.toLowerCase() : '';
+			var shown = 0;
+			membersArr.forEach(function(m) {
+				var hay = ((m.name || '') + ' ' + m.id + ' ' + (m.ipAssignments || []).join(', ')).toLowerCase();
+				if (q && hay.indexOf(q) === -1) return;
+				shown++;
+				tbody.appendChild(memberRow(m));
+			});
+			if (!shown) tbody.appendChild(E('tr', {}, [ E('td', { 'colspan': '8', 'style': 'color:orange;' }, [ _('No members match.') ]) ]));
+			setCounter(shown);
+		}
+		filterI.addEventListener('input', drawRows);
+
+		/* ztncui column order. Lives inside the members div, never nested in
+		 * the network <table>: nested tables share column widths (see the
+		 * comment above netRow's return). Header labels may wrap; the fixed
+		 * layout plus 34px + 19+12+9+9+13+12+26% keeps the grid stable. */
+		var hdr = E('tr', {}, [
+			E('th', { 'style': 'width:34px;' }, []),
+			E('th', { 'style': 'width:19%;' }, [_('Member name')]),
+			E('th', { 'style': 'width:12%;' }, [_('Member ID')]),
+			E('th', { 'style': 'width:9%; text-align:center;' }, [_('Authorized')]),
+			E('th', { 'style': 'width:9%; text-align:center;' }, [_('Active bridge')]),
+			E('th', { 'style': 'width:13%;' }, [_('IP assignment')]),
+			E('th', { 'style': 'width:12%;' }, [_('Peer status')]),
+			E('th', { 'style': 'width:26%;' }, [_('Peer address / latency')])
+		]);
+		into.appendChild(E('div', { 'style': 'display:flex; gap:8px; align-items:center; margin:6px 0;' }, [ filterI, counterHost ]));
+		into.appendChild(E('table', { 'class': 'table', 'style': 'table-layout:fixed; width:100%;' }, [ hdr, tbody ]));
+		drawRows();
 		});
 	}
 
