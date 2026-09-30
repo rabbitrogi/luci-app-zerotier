@@ -189,3 +189,105 @@ msgstr "备份失败"
 
 msgid "Backup request failed"
 msgstr "备份请求失败"
+
+msgid "Moons"
+msgstr "Moon"
+
+msgid "Orbiting a moon adds its roots to this node's root set. ZeroTier keeps using the planetary roots as fallback. Note that upstream ZeroTier no longer recommends private moons and does not support them under its SLA."
+msgstr "加入 moon 会把它的根节点加入本节点的根集合，ZeroTier 仍会回落到 planet 根节点。注意：上游 ZeroTier 已不再推荐私有 moon，且不在其 SLA 支持范围内。"
+
+msgid "Add Moon"
+msgstr "加入 Moon"
+
+msgid "Moon ID"
+msgstr "Moon ID"
+
+msgid "Moon Seed"
+msgstr "Moon 种子节点"
+
+msgid "The 10-digit address of one of the moon's roots. ZeroTier fetches the moon definition from it."
+msgstr "moon 某个根节点的 10 位地址，ZeroTier 将从它获取 moon 定义文件。"
+
+msgid "Moon ID must be 10 hexadecimal digits (e.g. 123456abcd)"
+msgstr "Moon ID 必须是 10 位十六进制字符（例如 123456abcd）"
+
+msgid "Moon Seed must be the 10-digit address of one of the moon's roots"
+msgstr "Moon 种子必须是该 moon 某个根节点的 10 位地址"
+
+msgid "Orbiting..."
+msgstr "正在加入..."
+
+msgid "Orbited Moon"
+msgstr "已加入 Moon"
+
+msgid "Orbit failed"
+msgstr "加入失败"
+
+msgid "Orbit request failed"
+msgstr "加入请求失败"
+
+msgid "Left Moon"
+msgstr "已退出 Moon"
+
+msgid "Leaving moon..."
+msgstr "正在退出 moon..."
+
+msgid "Leave"
+msgstr "退出"
+
+msgid "Moon was not orbited"
+msgstr "本节点并未加入该 moon"
+
+msgid "Deorbit failed"
+msgstr "退出失败"
+
+msgid "Deorbit request failed"
+msgstr "退出请求失败"
+
+msgid "Roots"
+msgstr "根节点数"
+
+msgid "Endpoints"
+msgstr "端点"
+
+msgid "Storage"
+msgstr "持久化"
+
+msgid "persistent"
+msgstr "已持久化"
+
+msgid "waiting for the moon definition - this orbit is not persistent yet"
+msgstr "正在等待 moon 定义 — 该 join 尚未持久化"
+
+msgid "No moons orbited"
+msgstr "未加入任何 moon"
+
+msgid "Cannot read moons (is the ZeroTier service running?)"
+msgstr "无法读取 moon（ZeroTier 服务是否在运行？）"
+
+msgid "Error reading moon list"
+msgstr "读取 moon 列表出错"
+
+msgid "Error loading moons"
+msgstr "加载 moon 列表出错"
+
+msgid "Registering the orbit..."
+msgstr "正在注册 orbit..."
+
+msgid "Orbit registered. The moon definition is still being fetched from the seed - it will appear below once it arrives."
+msgstr "orbit 已注册。moon 定义仍在从种子节点获取中，到达后会显示在下方。"
+
+msgid "saving..."
+msgstr "正在保存..."
+
+msgid "Saving to the persistent folder automatically. Until then the orbit is lost on daemon restart. If it stays in this state, use \"Backup Now\" under Settings -> Advanced options."
+msgstr "正在自动保存到持久化目录。在此之前，重启守护进程会丢失该 orbit。若长期停留在此状态，请到“基本设置 → 高级设置”中点击“立即备份”。"
+
+msgid "Add"
+msgstr "添加"
+
+msgid "Cancel"
+msgstr "取消"
+
+msgid "Actions"
+msgstr "操作"
