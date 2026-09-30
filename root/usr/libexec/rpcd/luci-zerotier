@@ -104,23 +104,19 @@ case "$1" in
 		json_close_object
 		json_add_object "status"
 		json_close_object
-		json_add_object "get_networks"
+		json_add_object "get_networks_peers"
 		json_close_object
-		json_add_object "get_identity"
+		json_add_object "list_moons"
 		json_close_object
-			json_add_object "get_peers"
-			json_close_object
-			json_add_object "list_moons"
-			json_close_object
-			json_add_object "orbit_moon"
-				json_add_string "moon_id" "string"
-				json_add_string "seed" "string"
-			json_close_object
-			json_add_object "deorbit_moon"
-				json_add_string "moon_id" "string"
-			json_close_object
-			json_add_object "ping_networks"
-			json_close_object
+		json_add_object "orbit_moon"
+			json_add_string "moon_id" "string"
+			json_add_string "seed" "string"
+		json_close_object
+		json_add_object "deorbit_moon"
+			json_add_string "moon_id" "string"
+		json_close_object
+		json_add_object "ping_networks"
+		json_close_object
 		json_add_object "sync_config"
 			json_add_string "local_conf_path" "path"
 		json_close_object
@@ -151,88 +147,65 @@ case "$1" in
 				json_dump
 				;;
 			status)
-				# Get luci-zerotier service status - SAFE: read-only operation
+				# Read-only: one liveness flag plus the node address, so the
+				# settings page needs a single RPC instead of two.
+				#
+				# The check is pid + /proc/<pid>/comm rather than
+				# `ps | grep zerotier-one`: comm confirms the pid was not
+				# recycled by an unrelated process, and both cat and read are
+				# builtins, so this costs zero forks. `uci get`/`uci show`
+				# results were also dropped -- nothing ever rendered them.
 				json_init
 
-				# Check if zerotier-one is running
-				if ps 2>/dev/null | grep -q '[/]usr/bin/zerotier-one'; then
+				_pid=$(cat /var/lib/zerotier-one/zerotier-one.pid 2>/dev/null)
+				if [ -n "$_pid" ] && read -r _comm < "/proc/$_pid/comm" 2>/dev/null && [ "$_comm" = "zerotier-one" ]; then
 					json_add_boolean "running" 1
 				else
 					json_add_boolean "running" 0
 				fi
 
-				# Get current NAT setting
-				nat_setting=$(uci get zerotier.global.nat 2>/dev/null || echo "0")
-				json_add_string "nat" "$nat_setting"
-
-				# Check firewall rules
-				firewall_rules=$(uci show firewall | grep zerotier | wc -l)
-				json_add_int "firewall_rules" "$firewall_rules"
+				if command -v zerotier-cli >/dev/null 2>&1; then
+					_id=$(zerotier-cli -j info 2>/dev/null | jsonfilter -e '@.address' 2>/dev/null)
+					json_add_string "identity" "$_id"
+				else
+					json_add_string "identity" ""
+				fi
 
 				json_dump
 				;;
-			get_networks)
-				# Get ZeroTier network status as JSON - SAFE: read-only operation
+			get_networks_peers)
+				# Merged on purpose: zerotier-cli is the 1.2 MB zerotier-one
+				# binary, so every call loads it and opens a connection to the
+				# local control port. The info page polls both data sets on the
+				# same 5s timer, so one method halves the process churn.
 				json_init
 
-				if command -v zerotier-cli >/dev/null 2>&1; then
-					networks_output=$(zerotier-cli -j listnetworks 2>/dev/null)
-					exit_code=$?
-
-					json_add_int "code" "$exit_code"
-					json_add_string "networks" "$networks_output"
-					json_add_string "stderr" ""
-				else
+				if ! command -v zerotier-cli >/dev/null 2>&1; then
 					json_add_int "code" 1
 					json_add_string "networks" ""
-					json_add_string "stderr" "zerotier-cli not found"
-				fi
-
-				json_dump
-				;;
-			get_identity)
-				# Get ZeroTier node identity (address) via JSON - SAFE: read-only operation
-				json_init
-
-				if command -v zerotier-cli >/dev/null 2>&1; then
-					info_json=$(zerotier-cli -j info 2>/dev/null)
-					exit_code=$?
-
-					if [ "$exit_code" -eq 0 ] && [ -n "$info_json" ]; then
-						identity=$(echo "$info_json" | jsonfilter -e '@.address' 2>/dev/null)
-						json_add_int "code" 0
-						json_add_string "identity" "$identity"
-						json_add_string "stderr" ""
-					else
-						json_add_int "code" "$exit_code"
-						json_add_string "identity" ""
-						json_add_string "stderr" "zerotier-cli info failed"
-					fi
-				else
-					json_add_int "code" 1
-					json_add_string "identity" ""
-					json_add_string "stderr" "zerotier-cli not found"
-				fi
-
-				json_dump
-				;;
-			get_peers)
-				# Get ZeroTier peers as JSON - SAFE: read-only operation
-				json_init
-
-				if command -v zerotier-cli >/dev/null 2>&1; then
-					peers_output=$(zerotier-cli -j listpeers 2>/dev/null)
-					exit_code=$?
-
-					json_add_int "code" "$exit_code"
-					json_add_string "peers" "$peers_output"
-					json_add_string "stderr" ""
-				else
-					json_add_int "code" 1
 					json_add_string "peers" ""
 					json_add_string "stderr" "zerotier-cli not found"
+					json_dump
+					return
 				fi
 
+				_networks=$(zerotier-cli -j listnetworks 2>/dev/null)
+				_rc_n=$?
+				_peers=$(zerotier-cli -j listpeers 2>/dev/null)
+				_rc_p=$?
+
+				# Report failure if either half failed, so the UI can tell
+				# "service unreachable" apart from "nothing joined".
+				if [ "$_rc_n" -ne 0 ]; then
+					_rc=$_rc_n
+				else
+					_rc=$_rc_p
+				fi
+
+				json_add_int "code" "$_rc"
+				json_add_string "networks" "$_networks"
+				json_add_string "peers" "$_peers"
+				json_add_string "stderr" ""
 				json_dump
 				;;
 			list_moons)

@@ -5,9 +5,7 @@
 			"ubus": {
 				"luci-zerotier": [
 					"status",
-					"get_networks",
-					"get_identity",
-					"get_peers",
+					"get_networks_peers",
 					"list_moons",
 					"ping_networks"
 				]

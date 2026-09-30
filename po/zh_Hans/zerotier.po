@@ -291,3 +291,21 @@ msgstr "取消"
 
 msgid "Actions"
 msgstr "操作"
+
+msgid "Port must be a number"
+msgstr "端口必须是数字"
+
+msgid "Port must be between 0 and 65535"
+msgstr "端口必须在 0 到 65535 之间"
+
+msgid "Cannot reach the ZeroTier service"
+msgstr "无法连接到 ZeroTier 服务"
+
+msgid "ZeroTier"
+msgstr "ZeroTier"
+
+msgid "Enable"
+msgstr "启用"
+
+msgid "Port"
+msgstr "端口"

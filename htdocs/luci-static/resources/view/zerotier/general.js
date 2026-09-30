@@ -11,11 +11,6 @@ var callLuciZerotierStatus = rpc.declare({
 	method: 'status'
 });
 
-var callLuciZerotierIdentity = rpc.declare({
-	object: 'luci-zerotier',
-	method: 'get_identity'
-});
-
 var callLuciZerotierReload = rpc.declare({
 	object: 'luci-zerotier',
 	method: 'reload'
@@ -84,10 +79,20 @@ return view.extend({
 		o.description = _('Create or manage your zerotier network, and auth clients who could access');
 
 		// Advanced options
-		o = s.taboption('more', form.Value, 'port', _('Port'));
-		o.description = _('Port of zerotier service, default 9993');
-		o.placeholder = '9993';
-		o.datatype = 'port';
+			o = s.taboption('more', form.Value, 'port', _('Port'));
+			o.description = _('Port of zerotier service, default 9993');
+			o.placeholder = '9993';
+			o.validate = function(section_id, value) {
+				if (!value) return true;
+				// luci.js form.Value has no `datatype` hook, so it validated
+				// nothing and a bad value reached the daemon as "-p<value>".
+				// 0 is valid and documented upstream as "pick a random port".
+				if (!/^\d+$/.test(value))
+					return _('Port must be a number');
+				if (parseInt(value, 10) > 65535)
+					return _('Port must be between 0 and 65535');
+				return true;
+			};
 
 		o = s.taboption('more', form.TextValue, 'secret', _('Secret'));
 		o.description = _('Secret of zerotier client. Displayed masked for security; paste a new identity.secret to replace it, or clear the field to remove it (a new identity is generated on next start).');
@@ -226,6 +231,7 @@ return view.extend({
 							'style': 'color:' + runningClass
 						}, ['ZeroTier ' + runningText]));
 					}
+					updateIdentity(res);
 				}).catch(function(err) {
 					var statusEl = document.getElementById('zerotier_status');
 					if (statusEl) {
@@ -237,43 +243,28 @@ return view.extend({
 				});
 			};
 
-		var updateIdentity = function() {
-			return L.resolveDefault(callLuciZerotierIdentity(), {}).then(function(res) {
-				var identityEl = document.getElementById('zerotier_identity');
-				if (identityEl) {
-					identityEl.textContent = '';
-					identityEl.appendChild(E('span', {}, [
-						_('Address') + ': '
-					]));
-					if (res && res.identity) {
-						identityEl.appendChild(E('b', {
-							'style': 'font-family: monospace; color: inherit;'
-						}, [res.identity]));
-					} else {
-						identityEl.appendChild(E('b', {
-							'style': 'color: gray;'
-						}, ['-']));
-					}
-				}
-			}).catch(function(err) {
-					var identityEl = document.getElementById('zerotier_identity');
-					if (identityEl) {
-						identityEl.textContent = '';
-						identityEl.appendChild(E('span', {}, [
-							_('Address') + ': '
-						]));
-						identityEl.appendChild(E('b', {
-							'style': 'color: gray;'
-						}, ['-']));
-					}
-				});
-			};
+		var updateIdentity = function(res) {
+			var identityEl = document.getElementById('zerotier_identity');
+			if (!identityEl) return;
+			identityEl.textContent = '';
+			identityEl.appendChild(E('span', {}, [
+				_('Address') + ': '
+			]));
+			if (res && res.identity) {
+				identityEl.appendChild(E('b', {
+					'style': 'font-family: monospace; color: inherit;'
+				}, [res.identity]));
+			} else {
+				identityEl.appendChild(E('b', {
+					'style': 'color: gray;'
+				}, ['-']));
+			}
+		};
 
-			poll.add(updateStatus, 3);
-			poll.add(updateIdentity, 10);
+			// Service state only changes on start/stop, so 10s is plenty.
+			poll.add(updateStatus, 10);
 
 			updateStatus();
-			updateIdentity();
 
 			return mapEl;
 		});

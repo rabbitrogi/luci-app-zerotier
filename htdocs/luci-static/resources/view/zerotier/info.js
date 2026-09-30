@@ -4,19 +4,14 @@
 'require poll';
 'require rpc';
 
-var callLuciZerotierIdentity = rpc.declare({
+var callLuciZerotierStatus = rpc.declare({
 	object: 'luci-zerotier',
-	method: 'get_identity'
+	method: 'status'
 });
 
-var callLuciZerotierNetworks = rpc.declare({
+var callLuciZerotierNetworksPeers = rpc.declare({
 	object: 'luci-zerotier',
-	method: 'get_networks'
-});
-
-var callLuciZerotierPeers = rpc.declare({
-	object: 'luci-zerotier',
-	method: 'get_peers'
+	method: 'get_networks_peers'
 });
 
 var callLuciZerotierPing = rpc.declare({
@@ -263,10 +258,10 @@ return view.extend({
 		]);
 
 		var parseNetworks = function(jsonStr) {
-			if (!jsonStr || typeof jsonStr !== 'string') return [];
+			if (!jsonStr || typeof jsonStr !== 'string') return null;
 			try {
 				var arr = JSON.parse(jsonStr);
-				if (!Array.isArray(arr)) return [];
+				if (!Array.isArray(arr)) return null;
 				return arr.map(function(net) {
 					return {
 						nwid: net.nwid || net.id || '-',
@@ -279,15 +274,15 @@ return view.extend({
 					};
 				});
 			} catch(e) {
-				return [];
+				return null;
 			}
 		};
 
 		var parsePeers = function(jsonStr) {
-			if (!jsonStr || typeof jsonStr !== 'string') return [];
+			if (!jsonStr || typeof jsonStr !== 'string') return null;
 			try {
 				var arr = JSON.parse(jsonStr);
-				if (!Array.isArray(arr)) return [];
+				if (!Array.isArray(arr)) return null;
 				return arr.map(function(peer) {
 					var path = '-';
 					var link = '-';
@@ -304,9 +299,12 @@ return view.extend({
 					} else if (path !== '-') {
 						link = 'DIRECT';
 					}
+					// ZeroTier reports an unknown version as the literal string
+					// "-1.-1.-1", which is truthy and so survived a `|| '-'`.
+					var ver = peer.version;
 					return {
 						ztaddr: peer.address || '-',
-						version: peer.version || '-',
+						version: (ver && !/^-1\./.test(ver)) ? ver : '-',
 						role: peer.role || '-',
 						latency: (peer.latency != null && peer.latency >= 0) ? String(peer.latency) : '-',
 						link: link,
@@ -314,7 +312,7 @@ return view.extend({
 					};
 				});
 			} catch(e) {
-				return [];
+				return null;
 			}
 		};
 
@@ -558,7 +556,7 @@ return view.extend({
 		};
 
 		var updateInfo = function() {
-			return L.resolveDefault(callLuciZerotierIdentity(), {}).then(function(res) {
+			return L.resolveDefault(callLuciZerotierStatus(), {}).then(function(res) {
 				var identityEl = document.getElementById('zt_identity');
 				if (identityEl && res) {
 					clearElement(identityEl);
@@ -662,74 +660,68 @@ return view.extend({
 			return table;
 		};
 
-		var updateNetworks = function() {
-			return L.resolveDefault(callLuciZerotierNetworks(), {}).then(function(res) {
-				var networksEl = document.getElementById('zt_networks');
-				if (!networksEl) {
-					return;
-				}
+		var renderNetworks = function(res) {
+			var el = document.getElementById('zt_networks');
+			if (!el) return;
+			clearElement(el);
 
-				clearElement(networksEl);
-
-				if (!res || !res.networks) {
-					networksEl.appendChild(E('p', { style: 'color: gray' }, [_('No networks joined')]));
-					return;
-				}
-
-				var networks = parseNetworks(res.networks);
-				if (networks.length === 0) {
-					networksEl.appendChild(E('p', { style: 'color: gray' }, [_('No networks joined')]));
-					return;
-				}
-
-				networksEl.appendChild(createNetworkTable(networks));
-			}).catch(function(err) {
-				var networksEl = document.getElementById('zt_networks');
-				if (networksEl) {
-					clearElement(networksEl);
-					networksEl.appendChild(E('p', { style: 'color: red' }, [_('Error loading networks')]));
-				}
-			});
+			if (!res || res.code !== 0) {
+				el.appendChild(E('p', { style: 'color: red' }, [_('Cannot reach the ZeroTier service')]));
+				return;
+			}
+			var networks = parseNetworks(res.networks);
+			if (networks === null) {
+				el.appendChild(E('p', { style: 'color: red' }, [_('Error loading networks')]));
+				return;
+			}
+			if (networks.length === 0) {
+				el.appendChild(E('p', { style: 'color: gray' }, [_('No networks joined')]));
+				return;
+			}
+			el.appendChild(createNetworkTable(networks));
 		};
 
-		var updatePeers = function() {
-			return L.resolveDefault(callLuciZerotierPeers(), {}).then(function(res) {
-				var peersEl = document.getElementById('zt_peers');
-				if (!peersEl) {
-					return;
-				}
+		var renderPeers = function(res) {
+			var el = document.getElementById('zt_peers');
+			if (!el) return;
+			clearElement(el);
 
-				clearElement(peersEl);
+			if (!res || res.code !== 0) {
+				el.appendChild(E('p', { style: 'color: red' }, [_('Cannot reach the ZeroTier service')]));
+				return;
+			}
+			var peers = parsePeers(res.peers);
+			if (peers === null) {
+				el.appendChild(E('p', { style: 'color: red' }, [_('Error loading peers')]));
+				return;
+			}
+			if (peers.length === 0) {
+				el.appendChild(E('p', { style: 'color: gray' }, [_('No peers')]));
+				return;
+			}
+			el.appendChild(createPeerTable(peers));
+		};
 
-				if (!res || !res.peers) {
-					peersEl.appendChild(E('p', { style: 'color: gray' }, [_('No peers')]));
-					return;
-				}
-
-				var peers = parsePeers(res.peers);
-				if (peers.length === 0) {
-					peersEl.appendChild(E('p', { style: 'color: gray' }, [_('No peers')]));
-					return;
-				}
-
-				peersEl.appendChild(createPeerTable(peers));
-			}).catch(function(err) {
-				var peersEl = document.getElementById('zt_peers');
-				if (peersEl) {
-					clearElement(peersEl);
-					peersEl.appendChild(E('p', { style: 'color: red' }, [_('Error loading peers')]));
-				}
-			});
+		// One RPC feeds both tables: zerotier-cli is the 1.2 MB zerotier-one
+		// binary, so two calls meant loading and linking it twice per cycle.
+		var updateTables = function() {
+			return L.resolveDefault(callLuciZerotierNetworksPeers(), {})
+				.then(function(res) {
+					renderNetworks(res);
+					renderPeers(res);
+				})
+				.catch(function() {
+					renderNetworks(null);
+					renderPeers(null);
+				});
 		};
 
 		updateInfo();
-		updateNetworks();
-		updatePeers();
+		updateTables();
 		updateMoons();
 
 		poll.add(updateInfo, 10);
-		poll.add(updateNetworks, 5);
-		poll.add(updatePeers, 5);
+		poll.add(updateTables, 5);
 		poll.add(updateMoons, 10);
 
 		return container;
