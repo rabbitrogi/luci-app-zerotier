@@ -272,6 +272,11 @@ r_tunnel_down() {
 # Forward 127.0.0.1:<lport> to the remote's loopback control plane. Bound
 # explicitly to loopback so the forwarded port is never reachable from the LAN.
 r_tunnel_up() {
+	# Budget the whole function, not each try: eight twelve-poll tries
+	# against a black-holed host could burn ~96s -- three times the ~30s
+	# rpcd abandonment measured on-device -- turning a clean failure into a
+	# client timeout while the helper churns on after rpcd has given up.
+	_deadline=$(( $(date +%s) + R_SSH_TIMEOUT ))
 	_try=0
 	while [ "$_try" -lt 8 ]; do
 		( exec ssh -i "$r_key" -N $R_SSH_OPTS -o ExitOnForwardFailure=yes \
@@ -288,10 +293,12 @@ r_tunnel_up() {
 			curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$r_lport/controller" 2>/dev/null
 			[ "$?" -eq 7 ] || return 0
 			kill -0 "$r_tpid" 2>/dev/null || break
+			[ "$(date +%s)" -lt "$_deadline" ] || break
 			_i=$((_i + 1))
 			sleep 1
 		done
 		r_tunnel_down
+		[ "$(date +%s)" -lt "$_deadline" ] || return 1
 		r_lport=$(( r_lport + 1 ))
 		[ "$r_lport" -ge 40000 ] && r_lport=20000
 		_try=$((_try + 1))
@@ -643,21 +650,29 @@ member-list)
 		[ -z "$_pids" ] || wait $_pids
 
 		_arr=""
+		_skip=""
 		while read -r _mid; do
 			[ -n "$_mid" ] || continue
 			_f=$(cat "$_d/$_mid" 2>/dev/null)
 			_body=$(printf '%s' "$_f" | sed '$d')
 			_rc=$(printf '%s' "$_f" | tail -n1 | tr -dc '0-9')
-			# A failed member fetch is SKIPPED, not embedded: an error
-			# body or a truncated read would make the whole array
-			# unparseable and cost every other member its row. A
-			# missing row is recoverable; a broken table is not.
+			_ok=false
 			case "$_body" in
 				'{'*'}')
-					[ "$_rc" = "200" ] && r_json_ok "$_body" || continue
+					[ "$_rc" = "200" ] && r_json_ok "$_body" && _ok=true
 					;;
-				*) continue ;;
 			esac
+			# Recorded and skipped, not one or the other: an error body here
+			# would corrupt the array, but dropping it silently made a
+			# network whose reads all failed read as one with no members.
+			if [ "$_ok" != "true" ]; then
+				if [ -n "$_skip" ]; then
+					_skip="$_skip,\"$_mid\""
+				else
+					_skip="\"$_mid\""
+				fi
+				continue
+			fi
 			# Joined, never blindly concatenated: a comma goes
 			# between two ACCEPTED elements only, so no path
 			# yields a leading, trailing or doubled comma.
@@ -675,7 +690,7 @@ member-list)
 		done < "$_d/ids"
 		rm -rf "$_d"
 		r_tunnel_down
-		r_emit "[$_arr]" "$_code"
+		printf '{"code":%s,"body":[%s],"skipped":[%s]}\n' "$_code" "$_arr" "$_skip"
 	fi
 	;;
 

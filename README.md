@@ -41,6 +41,7 @@ The custom `luci-zerotier` RPC object provides these methods (no `luci.exec` nee
 | `remote_diagnose` | read | Read-only survey of a remote host over SSH |
 | `remote_ctl_get` | read | Authenticated controller API read through the SSH tunnel |
 | `remote_member_list` | read | Every member of one network in a single tunnel round trip |
+| `remote_network_list` | read | Every network's full record in a single tunnel round trip |
 | `remote_peer_list` | read | The controller's live `/peer` list (status, version, latency, paths) |
 | `remote_moon_plan` | read | The exact remote command a moon creation would run, plus a digest |
 | `remote_host_set` | write | Add/update a remote host; writes the private key to a `0600` file |
@@ -66,7 +67,8 @@ make package/luci-app-zerotier/compile
 ```
 htdocs/luci-static/resources/view/zerotier/
 ├── general.js          # Settings page (enable, NAT, networks, advanced)
-└── info.js             # Info page (identity, networks table, peers table, ping)
+├── info.js             # Info page (identity, networks table, peers table, ping)
+└── remote.js           # Remote Controller page (hosts, networks, member table)
 
 root/usr/libexec/rpcd/
 └── luci-zerotier       # RPC daemon (status, networks, identity, peers, ping)
@@ -78,6 +80,7 @@ root/etc/uci-defaults/
 └── luci-zerotier       # Install/upgrade migrations, defaults seeding, cleanup
 
 root/usr/bin/
+├── zerotier-remote.sh  # Remote Controller transport (SSH tunnel, controller API)
 └── zerotier-sync.sh    # Runtime-state persistence (mirror of daemon state dirs)
 
 root/etc/zerotier/
@@ -198,6 +201,33 @@ stderr and continues. Two consequences are handled explicitly:
 - The controller **rules editor** is out of scope by design.
 
 ## Changelog
+
+### v2.2-r39
+
+**A failed member read used to look like success**
+
+- **A network whose every member read failed rendered as "No members have
+  joined this network yet."** `member-list` skipped unreadable members and
+  emitted an empty array with code 200, which the page could only read as an
+  empty network -- the exact failure `network-list` reports through its
+  `skipped` list. `member-list` now reports the same way, the table's counter
+  reads `shown / known` where known counts unreadable members, and a total
+  failure draws an error instead of an empty-network notice.
+- **The Refresh button could lie twice.** A failed refresh silently kept the
+  old rows -- correct -- but still moved the *updated* timestamp, presenting
+  stale data as fresh. The stamp now only moves when the member list actually
+  replaced the table, and a failed refresh says so instead of saying nothing.
+- **`r_tunnel_up` had no overall budget.** Eight retries of a twelve-poll loop
+  against a black-holed host could burn ~96s -- three times the ~30s rpcd
+  abandonment this project has measured on-device -- turning a clean failure
+  into a client timeout while the helper churned on after rpcd gave up. The
+  whole function is now bounded by `R_SSH_TIMEOUT`, checked while polling.
+- Documentation caught up with code: the RPC methods table gains the r38
+  `remote_network_list` row, the r36 changelog split turns out to have
+  *copied* its bullets into r36 instead of moving them (the r35 entry claimed
+  r36's work as its own -- now deduplicated), and the File Structure section
+  finally lists `remote.js` and `zerotier-remote.sh`, which it had omitted
+  since r33.
 
 ### v2.2-r38
 
@@ -386,31 +416,6 @@ stderr and continues. Two consequences are handled explicitly:
   script on disk looks perfect). Only the on-device ubus call caught this -- a
   DOM harness that stubs `rpc.declare` checks the name JavaScript dials, not
   whether the method exists.
-- **Mutations re-read only the member that changed, and authorization is
-  special-cased because the address does not arrive with the response.**
-  Measured on a real 1.14.2 controller: the `authorized` flag flips within 1ms
-  and reads back immediately, but `ipAssignments` stays empty at +1s, +2s and
-  +4s and is populated at **+8s** -- the node has to re-fetch the network
-  configuration and come up before the controller assigns anything. Refetching
-  straight after the POST therefore always reads an empty list and looks like a
-  failure, so the row is marked *assigning address...* and re-read once after
-  11s. Revoking needs no wait: the state is already final, and the controller
-  keeps `ipAssignments` across a revoke/restore cycle untouched (verified on a
-  production member), so the address stays visible after de-authorizing, which
-  is what the reference UI shows too.
-- **The re-read is per member, not per table**, and that is a cost decision as
-  much as a UX one. Every remote call costs an SSH handshake of ~2.05s, and
-  that handshake -- not the member count -- is the cost: one member and 31
-  members both bottom out at ~2.05s, the extra 30 fetches adding ~0.6s
-  together. Re-reading one member alongside the peer list measures 2.06s with
-  almost no variance, against 2.59s (and 2.05-2.67s of jitter) for the full
-  list. Repainting a single row is also what keeps an input the user is typing
-  into, the filter text and the scroll position from being thrown away.
-- The members panel carries a manual **Refresh** and an *updated* timestamp.
-  The button deliberately does a full reload, unlike the per-member path: it
-  exists for the case where the same controller is being edited in another
-  tool, which is exactly why `ztncui` had to keep member names outside the
-  controller in the first place.
 
 ### v2.2-r34
 

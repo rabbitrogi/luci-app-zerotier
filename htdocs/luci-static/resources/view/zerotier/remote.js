@@ -502,7 +502,15 @@ function networksPanel(section) {
 		 * against its entry here and the filter re-renders from it, so no
 		 * keystroke ever costs an SSH round-trip. */
 		var membersArr = mres.body;
+		var missingIds = Array.isArray(mres.skipped) ? mres.skipped : [];
 		if (!membersArr.length) {
+			/* An empty body with skipped entries is every read failing, not
+			 * an empty network: say so instead of a success message. */
+			if (missingIds.length) {
+				into.appendChild(E('div', { 'style': 'color:red;' }, [
+					_('Could not read any member of this network') + ' (' + missingIds.length + ')' ]));
+				return;
+			}
 			into.appendChild(E('div', { 'style': 'color:orange;' }, [ _('No members have joined this network yet.') ]));
 			return;
 		}
@@ -634,7 +642,9 @@ function networksPanel(section) {
 		}
 		function setCounter(shown) {
 			while (counterHost.firstChild) counterHost.removeChild(counterHost.firstChild);
-			counterHost.appendChild(E('span', {}, [ shown + ' / ' + membersArr.length + ' ' + _('members') ]));
+			var txt = shown + ' / ' + (membersArr.length + missingIds.length) + ' ' + _('members');
+			if (missingIds.length) txt += ' (' + missingIds.length + ' ' + _('unreadable') + ')';
+			counterHost.appendChild(E('span', {}, [ txt ]));
 		}
 
 		/* Inline edits post single-field bodies on purpose: the controller
@@ -861,13 +871,23 @@ function networksPanel(section) {
 				L.resolveDefault(rpcMemberList(section, nwid), {}),
 				L.resolveDefault(rpcPeerList(section), {})
 			]).then(function(r) {
-				var mres2 = r[0], pres3 = r[1];
-				if (mres2 && (mres2.code === 0 || mres2.code === 200) && Array.isArray(mres2.body))
-					membersArr = mres2.body;
-				if (pres3 && (pres3.code === 0 || pres3.code === 200) && Array.isArray(pres3.body))
-					applyPeers(pres3.body);
-				drawRows();
-				setStamp();
+			var mres2 = r[0], pres3 = r[1];
+			var msk2 = Array.isArray(mres2 && mres2.skipped) ? mres2.skipped : [];
+			/* An empty body with skipped entries is every read failing, not an
+			 * empty network: keep the table rather than blank it, and say so.
+			 * The stamp claims the table is fresh, so only a fetch that
+			 * actually replaced it may move it. */
+			var mok2 = !!(mres2 && (mres2.code === 0 || mres2.code === 200) && Array.isArray(mres2.body) && (mres2.body.length || !msk2.length));
+			if (mok2) {
+				membersArr = mres2.body;
+				missingIds = msk2;
+			}
+			else
+				ui.addNotification(null, E('span', { 'class': 'alert-message warning' }, [ errText(mres2, _('Could not refresh the member list; the table is unchanged')) ]), 'warning');
+			if (pres3 && (pres3.code === 0 || pres3.code === 200) && Array.isArray(pres3.body))
+				applyPeers(pres3.body);
+			drawRows();
+			if (mok2) setStamp();
 			});
 		}
 		var refreshBtn = E('button', { 'class': 'cbi-button cbi-button-action' }, [ _('Refresh') ]);
@@ -1021,9 +1041,7 @@ function moonPanel(section) {
 /* --------------------------------------------------------------------- page */
 
 return view.extend({
-	load: function() {
-		return Promise.all([ uci.load('zerotier') ]);
-	},
+	load: function() {},
 
 	render: function() {
 		var listBox = E('div', {});
