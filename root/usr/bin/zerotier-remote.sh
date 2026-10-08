@@ -266,6 +266,11 @@ r_tunnel_down() {
 		wait "$r_tpid" 2>/dev/null
 		r_tpid=""
 	fi
+	# r_hf holds the controller auth token; never leave it behind.
+	if [ -n "$r_hf" ]; then
+		rm -f "$r_hf" 2>/dev/null
+		r_hf=""
+	fi
 	return 0
 }
 
@@ -275,23 +280,46 @@ r_tunnel_up() {
 	# Budget the whole function, not each try: eight twelve-poll tries
 	# against a black-holed host could burn ~96s -- three times the ~30s
 	# rpcd abandonment measured on-device -- turning a clean failure into a
-	# client timeout while the helper churns on after rpcd has given up.
+	# client timeout while the helper churns on after rpcd gave up.
 	_deadline=$(( $(date +%s) + R_SSH_TIMEOUT ))
+	# A SIGKILLed call leaves its header file behind -- its trap cannot run,
+	# and the file holds the controller token. The pid in the name says
+	# whether the call that made it still exists; /proc/<pid> is the whole
+	# test, so a live call's file is never touched.
+	for _stale in /tmp/zt_hf_*; do
+		[ -e "$_stale" ] || continue
+		_sp=${_stale#/tmp/zt_hf_}; _sp=${_sp%%_*}
+		[ -d "/proc/$_sp" ] || rm -f "$_stale"
+	done
 	_try=0
 	while [ "$_try" -lt 8 ]; do
-		( exec ssh -i "$r_key" -N $R_SSH_OPTS -o ExitOnForwardFailure=yes \
+		# One connection carries the forward AND the token: the remote
+		# command prints the auth header, ssh lands it in r_hf, and ssh only
+		# runs commands after the forward is bound -- so a non-empty file
+		# means THIS tunnel is live. It replaces both the second ssh that
+		# read the token and the readiness probe, which trusted any listener
+		# on the port; a local process that pre-bound it could harvest the
+		# token. Our own ssh's stdout cannot be faked. The token read runs
+		# under sudo -n exactly as rrsh always ran it: the documented host
+		# precondition is passwordless sudo, and on production hosts the
+		# token is not readable by the ssh user. The trailing sleep
+		# bounds orphaned tunnels: r_tunnel_down kills this ssh on every
+		# normal path, but a SIGKILLed helper cannot, and `ssh -N` never
+		# exits on its own -- ten were found accumulated. No live call
+		# reaches 60s; the budget above sees to that.
+		r_hf=$(mktemp "/tmp/zt_hf_$$_XXXXXX") || return 1
+		( exec ssh -i "$r_key" $R_SSH_OPTS -o ExitOnForwardFailure=yes \
 		-L "127.0.0.1:$r_lport:127.0.0.1:$r_cport" \
-		-p "$r_sport" "$r_dest" ) >/dev/null 2>&1 &
+		-p "$r_sport" "$r_dest" \
+		'printf "X-ZT1-Auth: "; sudo -n cat /var/lib/zerotier-one/authtoken.secret; sleep 60' ) > "$r_hf" 2>/dev/null &
 		r_tpid=$!
 
-		# Wait for the forward to accept. curl exit 7 is "couldn't connect", the
-		# expected state mid-handshake; any other status means the forward is up
-		# and the API itself answered (or refused on its own terms, which is a
-		# real answer, not a tunnel failure).
+		# A token that exists but cannot be read still arrives as the bare
+		# "X-ZT1-Auth: " prefix, so readiness fires and the controller
+		# answers 401 on first use: the call fails visibly, not silently.
 		_i=0
 		while [ "$_i" -lt 12 ]; do
-			curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$r_lport/controller" 2>/dev/null
-			[ "$?" -eq 7 ] || return 0
+			[ -s "$r_hf" ] && return 0
 			kill -0 "$r_tpid" 2>/dev/null || break
 			[ "$(date +%s)" -lt "$_deadline" ] || break
 			_i=$((_i + 1))
@@ -312,31 +340,18 @@ r_tunnel_up() {
 # alongside the body and a command substitution would run this in a subshell
 # where a variable assignment cannot escape.
 rctl() {
-	_tok=$(rrsh cat /var/lib/zerotier-one/authtoken.secret 2>/dev/null)
-	[ -n "$_tok" ] || r_die "could not read the remote controller token over ssh"
-
 	if [ -n "$3" ]; then
 		_out=$(curl -s --max-time 20 -X "$1" \
-			-H "X-ZT1-Auth: $_tok" -H "Content-Type: application/json" \
+			-H @"$r_hf" -H "Content-Type: application/json" \
 			--data-binary "$3" -w '\n%{http_code}' \
 			"http://127.0.0.1:$r_lport$2" 2>/dev/null)
 	else
 		_out=$(curl -s --max-time 20 -X "$1" \
-			-H "X-ZT1-Auth: $_tok" -w '\n%{http_code}' \
+			-H @"$r_hf" -w '\n%{http_code}' \
 			"http://127.0.0.1:$r_lport$2" 2>/dev/null)
 	fi
 	r_ctl_code=$(printf '%s' "$_out" | tail -n1 | tr -dc '0-9')
 	r_ctl_body=$(printf '%s' "$_out" | sed '$d')
-}
-
-# rctl_tok -- the controller authtoken, read over the ssh channel. rctl
-# performs this same read internally on every call, which costs one ssh
-# handshake each; member-list needs the token for one map request plus N
-# member requests and pays that handshake exactly once, not N+1 times. Kept
-# as a separate helper instead of refactoring rctl to share it, so the
-# ctl-get path that shipped in r33 stays byte-for-byte what was proven.
-rctl_tok() {
-	rrsh cat /var/lib/zerotier-one/authtoken.secret 2>/dev/null
 }
 
 # rfetch <path> -- one authenticated GET through the ALREADY-OPEN tunnel,
@@ -349,7 +364,7 @@ rctl_tok() {
 # write path.
 rfetch() {
 	_out=$(curl -s --max-time 20 -X GET \
-		-H "X-ZT1-Auth: $_tok" -w '\n%{http_code}' \
+		-H @"$r_hf" -w '\n%{http_code}' \
 		"http://127.0.0.1:$r_lport$1" 2>/dev/null)
 	r_fetch_code=$(printf '%s' "$_out" | tail -n1 | tr -dc '0-9')
 	r_fetch_body=$(printf '%s' "$_out" | sed '$d')
@@ -581,8 +596,6 @@ member-list)
 	r_load "$2"
 	r_valid_hex "$3" 16 || r_die "network id must be 16 hex digits"
 	r_tunnel_up || { r_tunnel_down; r_die "could not open the ssh tunnel to $r_dest"; }
-	_tok=$(rctl_tok)
-	[ -n "$_tok" ] || { r_tunnel_down; r_die "could not read the remote controller token over ssh"; }
 	rfetch "/controller/network/$3/member"
 	_code=$r_fetch_code
 	_map=$r_fetch_body
@@ -632,7 +645,7 @@ member-list)
 		_n=0
 		for _mid in $_ok_ids; do
 			(
-				curl -s --max-time 20 -X GET -H "X-ZT1-Auth: $_tok" \
+				curl -s --max-time 20 -X GET -H @"$r_hf" \
 					-w '\n%{http_code}' \
 					"http://127.0.0.1:$r_lport/controller/network/$3/member/$_mid" \
 					> "$_d/$_mid" 2>/dev/null
@@ -704,8 +717,6 @@ member-list)
 network-list)
 	r_load "$2"
 	r_tunnel_up || { r_tunnel_down; r_die "could not open the ssh tunnel to $r_dest"; }
-	_tok=$(rctl_tok)
-	[ -n "$_tok" ] || { r_tunnel_down; r_die "could not read the remote controller token over ssh"; }
 	rfetch /controller/network
 	_code=$r_fetch_code
 	if [ "$_code" != "200" ]; then

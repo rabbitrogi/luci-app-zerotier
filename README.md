@@ -202,6 +202,41 @@ stderr and continues. Two consequences are handled explicitly:
 
 ## Changelog
 
+### v2.2-r40
+
+**One ssh connection per call**
+
+- **Every remote call used to open two ssh connections**: the tunnel, then a
+  second one to read the auth token. They are merged -- the tunnel's ssh now
+  runs `printf "X-ZT1-Auth: "; sudo -n cat authtoken.secret; sleep 60`, so the
+  token arrives on the same connection that carries the forward, and ssh only
+  runs commands after the forward is bound: a non-empty header file means THIS
+  tunnel is live. That replaces the second connection and the readiness probe
+  together. Measured on the production host: **2.39-2.81s down to 1.30-1.84s**
+  per call, and three concurrent calls -- which failed against the remote
+  sshd's `MaxStartups 10:30:100` when they meant six connections -- now pass
+  reliably at three.
+- **The probe this replaces trusted any listener on the port.** A local
+  process that pre-bound the pid-derived port could answer the readiness curl,
+  receive the `X-ZT1-Auth` token and feed crafted JSON into the page. The
+  stdout of our own ssh cannot be faked, so the interception finding from the
+  r38-r39 review is dead by construction rather than by patching.
+- The token now travels `ssh stdout -> 0600 mktemp file -> curl -H @file` and
+  never appears on a process command line (world-readable through `/proc`
+  before) nor in a shell variable.
+- The first attempt of this merge broke production, and reading the diff did
+  not catch it: the token read must run under `sudo -n` exactly as `rrsh`
+  always ran it, because on the production host the token is not readable by
+  the ssh user. The on-device re-test caught it -- plain `cat` worked against
+  the root-login test box and 401'd against production.
+- **Orphaned tunnels are bounded.** `ssh -N` never exits on its own, and a
+  helper killed outright cannot clean up after itself; ten orphans had
+  accumulated during earlier testing. The trailing `sleep 60` ends the session
+  on its own -- measured: a helper SIGKILLed mid-read left an orphan that
+  lived exactly 60s -- and the leaked header file (it holds the token) is
+  swept by the next call, which checks the pid embedded in the file's name
+  against `/proc`.
+
 ### v2.2-r39
 
 **A failed member read used to look like success**
