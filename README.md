@@ -195,6 +195,40 @@ stderr and continues. Two consequences are handled explicitly:
 
 ## Changelog
 
+### v2.2-r37
+
+**A name with a space in it could not be saved at all**
+
+- **The RPC layer built a command line as a string and let the shell split it
+  back into arguments.** `rpcd` collected the validated fields into `_args` and
+  invoked the helper as `zerotier-remote.sh $_args`, with an inline comment
+  asserting that the split was safe because every field had been validated. That
+  was true of the section name, the network id and the member id -- and false of
+  `body`, which is free-form JSON handed over by the browser. The moment a body
+  contained a space the shell split it in two, the helper's `'{'*'}'` guard saw
+  only the first fragment, and the call was rejected with *member body must be a
+  JSON object*. Nothing was written, and the message named the wrong culprit.
+  The arguments are now built with `set --` and passed as `"$@"`, so each one
+  reaches the helper intact.
+  This was not an edge case. Of the 29 named members on the production network,
+  **28 have a space in their name**; the only one that could be renamed was the
+  only one that had none. Every other rename has been failing this way, and the
+  reported symptom -- a rejected write -- is the mildest version of it.
+  `ctl-network-set` travels the same path, so network names with spaces were
+  broken identically.
+- **A failed rename left the rejected text sitting in the input**, which is
+  worse than the failure itself: the table showed the new name, so the edit
+  looked applied, and it was not. The value is now restored from the member
+  record when the write is rejected. The IP editor is deliberately left alone --
+  there an open editor holding your input for another attempt is the correct
+  behaviour, and Escape already reverts it.
+- Verified against a real controller rather than a stub: three names that all
+  broke the old path (a space, *consecutive* spaces, and an embedded escaped
+  quote) now read back byte-identical from the controller, while five malformed
+  bodies are still refused. The consecutive-space case is what rules out the
+  tempting one-line fix of rejoining the fragments with `$*` -- that would have
+  silently collapsed runs of spaces in a name.
+
 ### v2.2-r36
 
 **Read back what changed, and wait for the address to actually arrive**

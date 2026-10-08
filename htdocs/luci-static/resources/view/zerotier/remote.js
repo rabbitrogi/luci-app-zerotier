@@ -667,6 +667,7 @@ function networksPanel(section) {
 					nameBusy = false;
 					if (r2 && r2.code === 0) { m.name = v; flashBorder(nameI, 'green'); }
 					else {
+						nameI.value = m.name || '';
 						flashBorder(nameI, 'red');
 						ui.addNotification(null, E('span', { 'class': 'alert-message warning' }, [ errText(r2, _('Update failed')) ]), 'warning');
 					}
