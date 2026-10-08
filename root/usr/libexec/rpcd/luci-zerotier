@@ -145,6 +145,9 @@ case "$1" in
 			json_add_string "section" "string"
 			json_add_string "nwid" "string"
 		json_close_object
+		json_add_object "remote_network_list"
+			json_add_string "section" "string"
+		json_close_object
 		json_add_object "remote_peer_list"
 			json_add_string "section" "string"
 		json_close_object
@@ -820,7 +823,7 @@ case "$1" in
 				json_add_int "code" 0
 				json_dump
 				;;
-			remote_diagnose|remote_ctl_get|remote_member_list|remote_peer_list|remote_network_set|remote_network_del|remote_member_set|remote_moon_plan|remote_moon_apply)
+			remote_diagnose|remote_ctl_get|remote_member_list|remote_network_list|remote_peer_list|remote_network_set|remote_network_del|remote_member_set|remote_moon_plan|remote_moon_apply)
 				# Thin delegation to zerotier-remote.sh, which owns all SSH,
 				# tunnel and validation logic. Its stdout is already the JSON we
 				# return verbatim, so nothing is re-encoded here.
@@ -838,6 +841,7 @@ case "$1" in
 					remote_diagnose)    set -- diagnose "$_sect" ;;
 					remote_ctl_get)     set -- ctl-get "$_sect" "$_path" ;;
 					remote_member_list) set -- member-list "$_sect" "$_nwid" ;;
+					remote_network_list) set -- network-list "$_sect" ;;
 					remote_peer_list)   set -- peer-list "$_sect" ;;
 					remote_network_set) set -- ctl-network-set "$_sect" "$_nwid" "$_body" ;;
 					remote_network_del) set -- ctl-network-del "$_sect" "$_nwid" ;;

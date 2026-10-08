@@ -125,8 +125,12 @@ controller's **admin token on the wire in cleartext on every request**, from a
 residential IP that changes. So instead the router forwards a loopback port:
 
 ```
-127.0.0.1:<local_port>  --SSH-->  127.0.0.1:<controller_port>
+127.0.0.1:<per-invocation port>  --SSH-->  127.0.0.1:<controller_port>
 ```
+
+The local end is chosen per call rather than configured, so two requests to the
+same controller never contend for it (see the changelog for what that cost
+before).
 
 The daemon sees a loopback peer and short-circuits to allowed. The controller
 therefore needs **no configuration change at all** and stays firewalled to
@@ -194,6 +198,48 @@ stderr and continues. Two consequences are handled explicitly:
 - The controller **rules editor** is out of scope by design.
 
 ## Changelog
+
+### v2.2-r38
+
+**One tunnel per call, and members no longer read one at a time**
+
+- **Every remote call shared one local forwarding port.** `local_port` came from
+  UCI — a single value per host — while the page fires two calls at once for the
+  members table and one per network for the list. The loser's `ssh -L` died with
+  `Address in use`, but its readiness probe then reached the *winner's* tunnel
+  and reported success, so when the winner tore the tunnel down the loser read
+  an empty body: **2 of 6 concurrent runs** produced a members table that was
+  empty or missing entirely, with no error shown. Retrying another port cannot
+  fix that, because the borrow happens before any retry. The port is now derived
+  from the pid, which makes concurrent calls disjoint by construction, and
+  `r_tunnel_up` walks forward a port at a time if one is somehow taken. The
+  `local_port` UCI option is removed with it — nothing in the UI ever set it.
+- **The members table read its 30 members in 30 sequential requests.** Each read
+  is cheap; the round trips were not. Issued six at a time through the single
+  forwarded port, a 30-member production network went from **15.2s to 2.8s**,
+  and the page's slowest step became the same as its fastest. Output was
+  compared field by field against the controller's own records: no member
+  missing, none extra, no field differing.
+- **The network list asked for one detail per network**, each its own tunnel and
+  token read — the same N+1 `member-list` exists to avoid. A new `network-list`
+  subcommand fetches every detail through one tunnel, and a network whose read
+  fails is now **named on screen** instead of silently missing from the table.
+- A bare `wait` also waits for the tunnel, which is a child of the same shell
+  and does not exit until it is killed, so the first version of the parallel
+  read blocked until the call timed out — 30s and an empty body. Each curl is
+  now waited on by pid.
+- The staging directory the parallel read needs is removed by a trap rather than
+  at the end of the success path, because `r_die` exits and `rpcd` abandons a
+  call that runs long. Verified against a build with the trap removed, which
+  leaks on `SIGTERM`.
+- **Known ceiling, unchanged and pre-existing:** three concurrent calls (six SSH
+  connections) start failing against a host whose sshd has the default
+  `MaxStartups 10:30:100`. An A/B against the previous release fails equally at
+  that level, so this is the remote host's connection throttle, not the port
+  scheme. The page issues at most two at a time, where this release measures
+  zero failures over many rounds. Each call still opens two SSH connections
+  (tunnel, then the token read); folding those into one would halve the
+  pressure, at the cost of reworking how the token is fetched.
 
 ### v2.2-r37
 

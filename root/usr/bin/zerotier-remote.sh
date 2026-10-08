@@ -17,7 +17,7 @@
 #
 # So we forward a loopback port over SSH:
 #
-#     127.0.0.1:<local_port> --SSH--> 127.0.0.1:<controller_port>
+#     127.0.0.1:<per-invocation port> --SSH--> 127.0.0.1:<controller_port>
 #
 # The daemon sees a LOOPBACK peer, which OneService.cpp short-circuits to
 # allowed. The controller therefore needs NO configuration change and stays
@@ -136,16 +136,24 @@ r_load() {
 	r_host=$(rget "$r_sect" host)
 	r_user=$(rget "$r_sect" user root)
 	r_sport=$(rget "$r_sect" port 22)
-	r_lport=$(rget "$r_sect" local_port 19993)
 	r_cport=$(rget "$r_sect" controller_port 9993)
 	r_key=$(rget "$r_sect" key_path "/etc/zerotier/remote/$r_sect.key")
 
 	r_valid_host "$r_host" || r_die "invalid or empty host"
 	r_valid_user "$r_user" || r_die "invalid ssh user"
 	r_valid_port "$r_sport" || r_die "invalid ssh port"
-	r_valid_port "$r_lport" || r_die "invalid local_port"
 	r_valid_port "$r_cport" || r_die "invalid controller_port"
 	r_valid_path "$r_key" || r_die "invalid key_path"
+
+	# One local port per INVOCATION, not per host: load() and the members table
+	# both fire concurrent calls, and on a shared port the loser's readiness
+	# probe reached the winner's tunnel and reported success -- so the loser
+	# read an empty body when the winner tore the tunnel down (measured: 2 of 6
+	# runs). Retrying another port cannot fix that, the borrow precedes any
+	# retry. A pid-derived port is disjoint by construction; `local_port` is
+	# dropped with it, as nothing in the UI ever set it.
+	r_lport=$(( 20000 + ($$ % 19000) ))
+	r_valid_port "$r_lport" || r_die "could not derive a local forwarding port"
 
 	# Without an explicit key, ssh would fall back to an agent and then to
 	# password prompts, which would hang the rpcd call instead of failing it.
@@ -264,22 +272,29 @@ r_tunnel_down() {
 # Forward 127.0.0.1:<lport> to the remote's loopback control plane. Bound
 # explicitly to loopback so the forwarded port is never reachable from the LAN.
 r_tunnel_up() {
-	( exec ssh -i "$r_key" -N $R_SSH_OPTS -o ExitOnForwardFailure=yes \
+	_try=0
+	while [ "$_try" -lt 8 ]; do
+		( exec ssh -i "$r_key" -N $R_SSH_OPTS -o ExitOnForwardFailure=yes \
 		-L "127.0.0.1:$r_lport:127.0.0.1:$r_cport" \
 		-p "$r_sport" "$r_dest" ) >/dev/null 2>&1 &
-	r_tpid=$!
+		r_tpid=$!
 
-	# Wait for the forward to accept. curl exit 7 is "couldn't connect", the
-	# expected state mid-handshake; any other status means the forward is up
-	# and the API itself answered (or refused on its own terms, which is a
-	# real answer, not a tunnel failure).
-	_i=0
-	while [ "$_i" -lt 12 ]; do
-		curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$r_lport/controller" 2>/dev/null
-		[ "$?" -eq 7 ] || return 0
-		kill -0 "$r_tpid" 2>/dev/null || return 1
-		_i=$((_i + 1))
-		sleep 1
+		# Wait for the forward to accept. curl exit 7 is "couldn't connect", the
+		# expected state mid-handshake; any other status means the forward is up
+		# and the API itself answered (or refused on its own terms, which is a
+		# real answer, not a tunnel failure).
+		_i=0
+		while [ "$_i" -lt 12 ]; do
+			curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$r_lport/controller" 2>/dev/null
+			[ "$?" -eq 7 ] || return 0
+			kill -0 "$r_tpid" 2>/dev/null || break
+			_i=$((_i + 1))
+			sleep 1
+		done
+		r_tunnel_down
+		r_lport=$(( r_lport + 1 ))
+		[ "$r_lport" -ge 40000 ] && r_lport=20000
+		_try=$((_try + 1))
 	done
 	return 1
 }
@@ -585,39 +600,137 @@ member-list)
 		# placed in a URL. This script runs as root and the extraction
 		# above is textual: URL safety rests on this validation, not on
 		# the regex upstream of it.
-		_arr=""
+		_d=$(mktemp -d /tmp/zt_ml_XXXXXX) || { r_tunnel_down; r_die "cannot stage member reads"; }
+		# Removed on every exit, not just the success path: r_die exits and rpcd
+		# abandons a call that runs long, so end-only cleanup leaves the
+		# directory behind in both cases.
+		trap 'rm -rf "$_d"' EXIT INT TERM
+		_ok_ids=""
 		for _mid in $_mids; do
 			r_valid_hex "$_mid" 10 || continue
-			rfetch "/controller/network/$3/member/$_mid"
+			_ok_ids="$_ok_ids $_mid"
+			printf '%s\n' "$_mid" >> "$_d/ids"
+		done
+
+		# Six at a time. In sequence these cost N round trips: 15.2s for a
+		# 30-member production network, this page's slowest step by an order
+		# of magnitude. The cap is not about memory -- it stops one slow
+		# response from holding every other row behind it.
+		#
+		# Each pid is waited on by name. A bare `wait` also waits for the
+		# tunnel, which is a child of this shell and does not exit until
+		# r_tunnel_down kills it, so it blocked until the whole call timed
+		# out -- 30s and an empty body.
+		_pids=""
+		_n=0
+		for _mid in $_ok_ids; do
+			(
+				curl -s --max-time 20 -X GET -H "X-ZT1-Auth: $_tok" \
+					-w '\n%{http_code}' \
+					"http://127.0.0.1:$r_lport/controller/network/$3/member/$_mid" \
+					> "$_d/$_mid" 2>/dev/null
+			) &
+			_pids="$_pids $!"
+			_n=$(( _n + 1 ))
+			if [ "$_n" -ge 6 ]; then
+				# shellcheck disable=SC2086
+				wait $_pids
+				_pids=""
+				_n=0
+			fi
+		done
+		# shellcheck disable=SC2086
+		[ -z "$_pids" ] || wait $_pids
+
+		_arr=""
+		while read -r _mid; do
+			[ -n "$_mid" ] || continue
+			_f=$(cat "$_d/$_mid" 2>/dev/null)
+			_body=$(printf '%s' "$_f" | sed '$d')
+			_rc=$(printf '%s' "$_f" | tail -n1 | tr -dc '0-9')
 			# A failed member fetch is SKIPPED, not embedded: an error
 			# body or a truncated read would make the whole array
 			# unparseable and cost every other member its row. A
 			# missing row is recoverable; a broken table is not.
+			case "$_body" in
+				'{'*'}')
+					[ "$_rc" = "200" ] && r_json_ok "$_body" || continue
+					;;
+				*) continue ;;
+			esac
+			# Joined, never blindly concatenated: a comma goes
+			# between two ACCEPTED elements only, so no path
+			# yields a leading, trailing or doubled comma.
+			# Elements are embedded raw for the same reason
+			# r_emit embeds bodies raw -- each has passed the
+			# complete-object check, and a complete JSON
+			# value is self-delimiting: a '}' inside a
+			# string ends no object here any more than it
+			# does in the controller's own output.
+			if [ -n "$_arr" ]; then
+				_arr="$_arr,$_body"
+			else
+				_arr="$_body"
+			fi
+		done < "$_d/ids"
+		rm -rf "$_d"
+		r_tunnel_down
+		r_emit "[$_arr]" "$_code"
+	fi
+	;;
+
+# network-list <section> -- every network's full record in ONE ssh round trip.
+#
+# The controller's /controller/network returns only the id list, so the page used
+# to ask for one detail per network: one tunnel and one token read each, the
+# same N+1 member-list exists to avoid. Here the ids come from a single GET and
+# every detail is read through the same forwarded port, so the cost is one
+# handshake no matter how many networks the controller holds.
+network-list)
+	r_load "$2"
+	r_tunnel_up || { r_tunnel_down; r_die "could not open the ssh tunnel to $r_dest"; }
+	_tok=$(rctl_tok)
+	[ -n "$_tok" ] || { r_tunnel_down; r_die "could not read the remote controller token over ssh"; }
+	rfetch /controller/network
+	_code=$r_fetch_code
+	if [ "$_code" != "200" ]; then
+		r_tunnel_down
+		r_emit "" "${_code:-0}"
+	else
+		# A quoted 16-hex token with a closing quote cannot be a slice of a
+		# longer id, and every candidate is re-validated before it reaches a
+		# URL -- this script runs as root and the extraction is textual.
+_nids=$(printf '%s' "$r_fetch_body" | grep -oE '"[0-9a-fA-F]{16}"' | tr -d '"')
+		_arr=""
+		_skip=""
+		for _nid in $_nids; do
+			r_valid_hex "$_nid" 16 || continue
+			rfetch "/controller/network/$_nid"
 			_ok=false
 			case "$r_fetch_body" in
 				'{'*'}')
 					[ "$r_fetch_code" = "200" ] && r_json_ok "$r_fetch_body" && _ok=true
 					;;
 			esac
-			if [ "$_ok" = "true" ]; then
-				# Joined, never blindly concatenated: a comma goes
-				# between two ACCEPTED elements only, so no path
-				# yields a leading, trailing or doubled comma.
-				# Elements are embedded raw for the same reason
-				# r_emit embeds bodies raw -- each has passed the
-				# complete-object check, and a complete JSON
-				# value is self-delimiting: a '}' inside a
-				# string ends no object here any more than it
-				# does in the controller's own output.
-				if [ -n "$_arr" ]; then
-					_arr="$_arr,$r_fetch_body"
+			# Recorded and skipped, not one or the other: an error body
+			# here would corrupt the array, but dropping it silently made an
+			# unreadable network look like one that does not exist.
+			if [ "$_ok" != "true" ]; then
+				if [ -n "$_skip" ]; then
+					_skip="$_skip,\"$_nid\""
 				else
-					_arr="$r_fetch_body"
+					_skip="\"$_nid\""
 				fi
+				continue
+			fi
+			if [ -n "$_arr" ]; then
+				_arr="$_arr,$r_fetch_body"
+			else
+				_arr="$r_fetch_body"
 			fi
 		done
 		r_tunnel_down
-		r_emit "[$_arr]" "$_code"
+		printf '{"code":%s,"body":[%s],"skipped":[%s]}\n' "$_code" "$_arr" "$_skip"
 	fi
 	;;
 

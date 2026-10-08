@@ -30,6 +30,7 @@ var rpcNetSet = rpc.declare({ object: 'luci-zerotier', method: 'remote_network_s
 var rpcNetDel = rpc.declare({ object: 'luci-zerotier', method: 'remote_network_del', params: [ 'section', 'nwid' ] });
 var rpcMemberSet = rpc.declare({ object: 'luci-zerotier', method: 'remote_member_set', params: [ 'section', 'nwid', 'member_id', 'body' ] });
 var rpcMemberList = rpc.declare({ object: 'luci-zerotier', method: 'remote_member_list', params: [ 'section', 'nwid' ] });
+var rpcNetworkList = rpc.declare({ object: 'luci-zerotier', method: 'remote_network_list', params: [ 'section' ] });
 var rpcPeerList  = rpc.declare({ object: 'luci-zerotier', method: 'remote_peer_list',  params: [ 'section' ] });
 var rpcMoonPlan = rpc.declare({ object: 'luci-zerotier', method: 'remote_moon_plan', params: [ 'section' ] });
 var rpcMoonApply = rpc.declare({ object: 'luci-zerotier', method: 'remote_moon_apply', params: [ 'section', 'confirm' ] });
@@ -902,14 +903,14 @@ function networksPanel(section) {
 	function load() {
 		while (table.firstChild) table.removeChild(table.firstChild);
 		table.appendChild(E('div', { 'style': 'color:orange;' }, [ _('Loading...') ]));
-		L.resolveDefault(rpcCtlGet(section, '/controller/network'), {}).then(function(res) {
+		L.resolveDefault(rpcNetworkList(section), {}).then(function(res) {
 			while (table.firstChild) table.removeChild(table.firstChild);
-			if (res && res.code !== 200) {
+			var nets = res && Array.isArray(res.body) ? res.body : null;
+			if (!nets) {
 				table.appendChild(E('div', { 'style': 'color:red;' }, [ errText(res, _('Could not reach the controller')) ]));
 				return;
 			}
-			var ids = Array.isArray(res.body) ? res.body : [];
-			if (!ids.length) {
+			if (!nets.length) {
 				table.appendChild(E('div', { 'style': 'color:orange;' }, [ _('This controller has no networks yet.') ]));
 				return;
 			}
@@ -924,11 +925,13 @@ function networksPanel(section) {
 			 * forms stretch the nwid column (see netRow). So the header goes in
 			 * its own table and each network follows as a sibling block. */
 			table.appendChild(E('table', { 'class': 'table' }, [ head ]));
-			ids.forEach(function(nwid) {
-				L.resolveDefault(rpcCtlGet(section, '/controller/network/' + nwid), {}).then(function(d) {
-					if (d && d.code === 200 && d.body) table.appendChild(netRow(d.body));
-				});
-			});
+			nets.forEach(function(nw) { table.appendChild(netRow(nw)); });
+			var skipped = res.skipped || [];
+			if (skipped.length) {
+				table.appendChild(E('div', { 'style': 'color:red; margin-top:6px;' }, [
+					_('Could not read these networks, so they are not shown: ') + skipped.join(', ')
+				]));
+			}
 		});
 	}
 
