@@ -276,6 +276,31 @@ stderr and continues. Two consequences are handled explicitly:
   script on disk looks perfect). Only the on-device ubus call caught this -- a
   DOM harness that stubs `rpc.declare` checks the name JavaScript dials, not
   whether the method exists.
+- **Mutations re-read only the member that changed, and authorization is
+  special-cased because the address does not arrive with the response.**
+  Measured on a real 1.14.2 controller: the `authorized` flag flips within 1ms
+  and reads back immediately, but `ipAssignments` stays empty at +1s, +2s and
+  +4s and is populated at **+8s** -- the node has to re-fetch the network
+  configuration and come up before the controller assigns anything. Refetching
+  straight after the POST therefore always reads an empty list and looks like a
+  failure, so the row is marked *assigning address...* and re-read once after
+  11s. Revoking needs no wait: the state is already final, and the controller
+  keeps `ipAssignments` across a revoke/restore cycle untouched (verified on a
+  production member), so the address stays visible after de-authorizing, which
+  is what the reference UI shows too.
+- **The re-read is per member, not per table**, and that is a cost decision as
+  much as a UX one. Every remote call costs an SSH handshake of ~2.05s, and
+  that handshake -- not the member count -- is the cost: one member and 31
+  members both bottom out at ~2.05s, the extra 30 fetches adding ~0.6s
+  together. Re-reading one member alongside the peer list measures 2.06s with
+  almost no variance, against 2.59s (and 2.05-2.67s of jitter) for the full
+  list. Repainting a single row is also what keeps an input the user is typing
+  into, the filter text and the scroll position from being thrown away.
+- The members panel carries a manual **Refresh** and an *updated* timestamp.
+  The button deliberately does a full reload, unlike the per-member path: it
+  exists for the case where the same controller is being edited in another
+  tool, which is exactly why `ztncui` had to keep member names outside the
+  controller in the first place.
 
 ### v2.2-r34
 

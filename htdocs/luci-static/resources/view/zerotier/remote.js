@@ -538,6 +538,89 @@ function networksPanel(section) {
 			return pth || p.paths[0];
 		}
 
+		/* ------------------------------------------------------------ refresh
+		 *
+		 * Every remote call costs an SSH handshake (~2.05s measured on the
+		 * target), and that cost is the handshake, not the member count: one
+		 * member and 31 members both bottom out at ~2.05s, the 30 extra
+		 * fetches adding ~0.6s together. So a refresh re-reads exactly the
+		 * member that changed and leaves every other row -- including one the
+		 * user is typing into -- untouched. Full redraws would also throw away
+		 * the filter text and the scroll position.
+		 *
+		 * peerMap and pok are refreshed alongside because peer state changes
+		 * on its own (a node connects, a path expires) and it costs nothing
+		 * extra to fetch in parallel with the member.
+		 *
+		 * rowRefs maps member id to that row's live cells, so a refresh can
+		 * repaint one row in place instead of rebuilding the tbody.
+		 */
+		var rowRefs = {};
+
+		function applyPeers(peers) {
+			pok = Array.isArray(peers);
+			peerMap = {};
+			if (pok) peers.forEach(function(p) { if (p && p.address) peerMap[p.address] = p; });
+			for (var mid in rowRefs) {
+				var r = rowRefs[mid];
+				if (!r) continue;
+				paint(r.status, r.statusText());
+				paint(r.addr, r.addrText());
+			}
+		}
+		function paint(td, text) {
+			while (td.firstChild) td.removeChild(td.firstChild);
+			td.appendChild(typeof text === 'string' ? document.createTextNode(text) : text);
+		}
+
+		function refreshMember(mid) {
+			return Promise.all([
+				L.resolveDefault(rpcCtlGet(section, '/controller/network/' + nwid + '/member/' + mid), {}),
+				L.resolveDefault(rpcPeerList(section), {})
+			]).then(function (r) {
+				var cres = r[0], pres2 = r[1];
+				if (pres2 && (pres2.code === 0 || pres2.code === 200) && Array.isArray(pres2.body))
+					applyPeers(pres2.body);
+				if (!cres || cres.code !== 200 || !cres.body) return null;
+				/* Merge onto the cached model rather than replacing the row, so
+				 * an input the user is focused in keeps focus and value. */
+				var m = null;
+				for (var i = 0; i < membersArr.length; i++)
+					if (membersArr[i].id === mid) { m = membersArr[i]; break; }
+				if (!m) return null;
+				m.name = cres.body.name || '';
+				m.authorized = !!cres.body.authorized;
+				m.activeBridge = !!cres.body.activeBridge;
+				m.ipAssignments = cres.body.ipAssignments || [];
+				m.vMajor = cres.body.vMajor;
+				m.vMinor = cres.body.vMinor;
+				m.revision = cres.body.revision;
+				var r = rowRefs[mid];
+				if (r) {
+					r.paintIp();
+					r.authCb.checked = m.authorized;
+					r.bridgeCb.checked = m.activeBridge;
+				}
+				return m;
+			});
+		}
+
+		/* How long after authorizing the address actually appears. Measured on a
+		 * real 1.14.2 controller: the POST returns in 1ms with authorized=true
+		 * but ipAssignments stays empty at +1s, +2s and +4s, and the address
+		 * is there at +8s -- the node has to re-fetch the network config and
+		 * come up before the controller assigns it. So the row is marked
+		 * "assigning" immediately and re-read once after that delay; fetching
+		 * right away would always read an empty list and look like a failure. */
+		var IP_ASSIGN_DELAY = 11000;
+		var stamp = E('span', { 'style': 'color:#888; font-size:12px;' }, []);
+		function setStamp() {
+			var d = new Date();
+			function p2(n) { return (n < 10 ? '0' : '') + n; }
+			while (stamp.firstChild) stamp.removeChild(stamp.firstChild);
+			stamp.appendChild(E('span', {}, [ _('updated') + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds()) ]));
+		}
+
 		var filterI = E('input', { 'type': 'text', 'placeholder': _('Filter by name, address or IP'), 'style': 'width:220px; margin-right:8px;' });
 		var counterHost = E('span', { 'style': 'color:#888; font-size:12px;' }, []);
 		var tbody = E('tbody', {});
@@ -598,42 +681,68 @@ function networksPanel(section) {
 				else if (ev.keyCode === 27) nameI.value = m.name || '';
 			});
 
-			function checkboxTd(field) {
-				var c = E('input', { 'type': 'checkbox' });
-				c.checked = !!m[field];
-				var busy = false;
-				c.addEventListener('change', function() {
-					if (busy) return;
-					busy = true;
-					var b = {};
-					b[field] = c.checked;
-					L.resolveDefault(rpcMemberSet(section, nwid, mid, JSON.stringify(b)), {}).then(function(r2) {
-						busy = false;
-						if (r2 && r2.code === 0) m[field] = c.checked;
-						else {
-							c.checked = !!m[field];
-							ui.addNotification(null, E('span', { 'class': 'alert-message warning' }, [ errText(r2, _('Update failed')) ]), 'warning');
+			var cbs = {};
+		function checkboxTd(field) {
+			var c = E('input', { 'type': 'checkbox' });
+			c.checked = !!m[field];
+			var busy = false;
+			c.addEventListener('change', function() {
+				if (busy) return;
+				busy = true;
+				var b = {};
+				b[field] = c.checked;
+				L.resolveDefault(rpcMemberSet(section, nwid, mid, JSON.stringify(b)), {}).then(function(r2) {
+					busy = false;
+					if (!r2 || r2.code !== 0) {
+						c.checked = !!m[field];
+						ui.addNotification(null, E('span', { 'class': 'alert-message warning' }, [ errText(r2, _('Update failed')) ]), 'warning');
+						return;
+					}
+					m[field] = c.checked;
+					/* De-authorize re-reads immediately rather than after the
+					 * delay: authorized is already final, and the controller
+					 * keeps ipAssignments across a revoke/restore cycle
+					 * untouched (verified), so only the peer columns can have
+					 * moved. */
+					if (field === 'authorized') {
+						if (c.checked) {
+							m.awaitingIp = true;
+							drawIp();
+							setTimeout(function() {
+								refreshMember(mid).then(function(fm) {
+									if (fm) fm.awaitingIp = false;
+									drawIp();
+								});
+							}, IP_ASSIGN_DELAY);
+						} else {
+							refreshMember(mid).then(function() { drawIp(); });
 						}
-					});
+					}
 				});
-				return E('td', { 'style': 'width:9%; text-align:center;' }, [ c ]);
-			}
+			});
+			cbs[field] = c;
+			return E('td', { 'style': 'width:9%; text-align:center;' }, [ c ]);
+		}
 
 			var ipTd = E('td', { 'style': 'width:13%; font-family:monospace; white-space:nowrap;' }, []);
 			var ipBusy = false, ipEditing = false;
 			function drawIp() {
-				while (ipTd.firstChild) ipTd.removeChild(ipTd.firstChild);
-				var ips = m.ipAssignments || [];
-				var clickable = E('span', { 'style': 'cursor:pointer;' }, ips.length
-					? [ ips.join(', ') ]
-					: [ E('span', { 'style': 'color:orange;' }, [
-						/* Empty ipAssignments with version -1 means the node has
-						 * never come up on this network; a positive version with
-						 * no IP means the network has no pool. */
-						(m.vMajor != null && m.vMajor < 0) ? _('never connected') : _('no pool assigned')
-					]) ]);
-				ipTd.appendChild(clickable);
+			while (ipTd.firstChild) ipTd.removeChild(ipTd.firstChild);
+			var ips = m.ipAssignments || [];
+			if (m.awaitingIp && !ips.length) {
+				ipTd.appendChild(E('span', { 'style': 'color:#888;' }, [ _('assigning address...') ]));
+				return;
 			}
+			var clickable = E('span', { 'style': 'cursor:pointer;' }, ips.length
+				? [ ips.join(', ') ]
+				: [ E('span', { 'style': 'color:orange;' }, [
+					/* Empty ipAssignments with version -1 means the node has
+					 * never come up on this network; a positive version with
+					 * no IP means the network has no pool. */
+					(m.vMajor != null && m.vMajor < 0) ? _('never connected') : _('no pool assigned')
+				]) ]);
+			ipTd.appendChild(clickable);
+		}
 			function startIpEdit() {
 				if (ipBusy) return;
 				ipEditing = true;
@@ -696,22 +805,35 @@ function networksPanel(section) {
 				return pth.address + ((p.latency > 0) ? ' (' + p.latency + ' ms)' : ' (-)');
 			}
 
-			return E('tr', {}, [
-				E('td', { 'style': 'width:34px; text-align:center;' }, [ rm ]),
-				E('td', { 'style': 'width:19%;' }, [ nameI ]),
-				E('td', { 'style': 'width:12%; font-family:monospace; white-space:nowrap;' }, [
-					E('code', {}, [ E('a', { 'href': '#', 'click': function(ev) { ev.preventDefault(); } }, [ mid ]) ])
-				]),
-				checkboxTd('authorized'),
-				checkboxTd('activeBridge'),
-				ipTd,
-				E('td', { 'style': 'width:12%;' }, [ statusContent() ]),
-				E('td', { 'style': 'width:26%; font-family:monospace;' }, [ addrContent() ])
-			]);
+			var statusTd = E('td', { 'style': 'width:12%;' }, [ statusContent() ]);
+		var addrTd = E('td', { 'style': 'width:26%; font-family:monospace;' }, [ addrContent() ]);
+		var tr = E('tr', {}, [
+			E('td', { 'style': 'width:34px; text-align:center;' }, [ rm ]),
+			E('td', { 'style': 'width:19%;' }, [ nameI ]),
+			E('td', { 'style': 'width:12%; font-family:monospace; white-space:nowrap;' }, [
+				E('code', {}, [ E('a', { 'href': '#', 'click': function(ev) { ev.preventDefault(); } }, [ mid ]) ])
+			]),
+			checkboxTd('authorized'),
+			checkboxTd('activeBridge'),
+			ipTd,
+			statusTd,
+			addrTd
+		]);
+		rowRefs[mid] = {
+			status: statusTd, addr: addrTd,
+			statusText: statusContent, addrText: addrContent,
+			paintIp: drawIp,
+			authCb: cbs.authorized, bridgeCb: cbs.activeBridge
+		};
+		return tr;
 		}
 
 		function drawRows() {
 			while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+			/* Clear the cell refs of the rows being replaced: a stale entry would
+			 * make applyPeers repaint a detached node, which fails silently
+			 * and leaves peer status frozen after any filter change. */
+			rowRefs = {};
 			var q = filterI.value ? filterI.value.toLowerCase() : '';
 			var shown = 0;
 			membersArr.forEach(function(m) {
@@ -729,6 +851,26 @@ function networksPanel(section) {
 		 * the network <table>: nested tables share column widths (see the
 		 * comment above netRow's return). Header labels may wrap; the fixed
 		 * layout plus 34px + 19+12+9+9+13+12+26% keeps the grid stable. */
+		/* Deliberately a full reload, unlike refreshMember: this button exists for the
+		 * case where the same controller is being edited in another tool. The
+		 * filter text survives because drawRows reads it back out of filterI. */
+		function refreshAll() {
+			Promise.all([
+				L.resolveDefault(rpcMemberList(section, nwid), {}),
+				L.resolveDefault(rpcPeerList(section), {})
+			]).then(function(r) {
+				var mres2 = r[0], pres3 = r[1];
+				if (mres2 && (mres2.code === 0 || mres2.code === 200) && Array.isArray(mres2.body))
+					membersArr = mres2.body;
+				if (pres3 && (pres3.code === 0 || pres3.code === 200) && Array.isArray(pres3.body))
+					applyPeers(pres3.body);
+				drawRows();
+				setStamp();
+			});
+		}
+		var refreshBtn = E('button', { 'class': 'cbi-button cbi-button-action' }, [ _('Refresh') ]);
+		refreshBtn.addEventListener('click', refreshAll);
+
 		var hdr = E('tr', {}, [
 			E('th', { 'style': 'width:34px;' }, []),
 			E('th', { 'style': 'width:19%;' }, [_('Member name')]),
@@ -739,7 +881,8 @@ function networksPanel(section) {
 			E('th', { 'style': 'width:12%;' }, [_('Peer status')]),
 			E('th', { 'style': 'width:26%;' }, [_('Peer address / latency')])
 		]);
-		into.appendChild(E('div', { 'style': 'display:flex; gap:8px; align-items:center; margin:6px 0;' }, [ filterI, counterHost ]));
+		into.appendChild(E('div', { 'style': 'display:flex; gap:8px; align-items:center; margin:6px 0;' },
+			[ filterI, counterHost, refreshBtn, stamp ]));
 		/* The scroll wrapper and min-width are load-bearing: table-layout:fixed
 		 * pins column widths but does NOT clip or wrap content, so a nowrap cell
 		 * wider than its share prints over the next column. Screenshotting the
@@ -751,6 +894,7 @@ function networksPanel(section) {
 			E('table', { 'class': 'table', 'style': 'table-layout:fixed; width:100%; min-width:1040px;' }, [ hdr, tbody ])
 		]));
 		drawRows();
+		setStamp();
 		});
 	}
 
