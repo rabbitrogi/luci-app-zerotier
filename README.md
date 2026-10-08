@@ -202,6 +202,31 @@ stderr and continues. Two consequences are handled explicitly:
 
 ## Changelog
 
+### v2.2-r41
+
+**Three hardening items from the review, one honestly retired**
+
+- **ctl-get and peer-list embedded whatever the controller returned, raw.** A
+  hostile or hijacked controller could close the JSON envelope early and
+  inject top-level fields -- `code`, `body`, `error` -- into the page. Both now
+  route through `r_emit_val`: a body that is not one complete JSON value ships
+  as an escaped STRING, which cannot add structure. `r_json_ok` generalised
+  from object-only to object-or-array, because both are real controller
+  responses. Verified by an adversarial unit pass against the deployed
+  function: envelope breakout, trailing garbage, truncation, and
+  type-mismatched closers all rejected; strings that merely contain braces
+  pass untouched. One test in that pass initially failed because the "hostile"
+  body written for it, `{"]":1}`, is legal JSON -- the key IS the string
+  `"]"`. The function was right; the test was wrong.
+- **A browser-supplied section name could name any `zerotier.*` UCI section**,
+  and its options would be read as connection parameters. `r_load` now
+  requires the section's type to be `remote`, which uci reports directly.
+- **The forwarding port mixes a random uuid in with the pid.** Honest framing:
+  since r40, readiness is our own ssh's stdout, so a pre-bound port costs one
+  retry and nothing more -- the port-hijack finding from the review is already
+  dead by construction, not by this. The entropy is defence in depth against
+  a forced-retry nuisance.
+
 ### v2.2-r40
 
 **One ssh connection per call**

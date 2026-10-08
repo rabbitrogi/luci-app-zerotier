@@ -132,6 +132,11 @@ r_load() {
 		*[!A-Za-z0-9_]*) r_die "invalid host section name" ;;
 	esac
 
+	# The browser supplies this name; only sections of type `remote` describe
+	# hosts. Without the check any zerotier.* section's options could be read
+	# as connection parameters.
+	[ "$(uci -q get "$ZT_UCI_CONFIG.$r_sect" 2>/dev/null)" = "remote" ] || r_die "not a remote host section"
+
 	r_name=$(rget "$r_sect" name "$r_sect")
 	r_host=$(rget "$r_sect" host)
 	r_user=$(rget "$r_sect" user root)
@@ -146,13 +151,15 @@ r_load() {
 	r_valid_path "$r_key" || r_die "invalid key_path"
 
 	# One local port per INVOCATION, not per host: load() and the members table
-	# both fire concurrent calls, and on a shared port the loser's readiness
-	# probe reached the winner's tunnel and reported success -- so the loser
-	# read an empty body when the winner tore the tunnel down (measured: 2 of 6
-	# runs). Retrying another port cannot fix that, the borrow precedes any
-	# retry. A pid-derived port is disjoint by construction; `local_port` is
-	# dropped with it, as nothing in the UI ever set it.
-	r_lport=$(( 20000 + ($$ % 19000) ))
+	# both fire concurrent calls, and a shared port once let the loser borrow
+	# the winner's tunnel (measured: 2 of 6 runs). A per-invocation port is
+	# disjoint by construction. The uuid mixed in only makes the value harder
+	# to pre-bind for a local process chasing a forced retry -- since r40,
+	# readiness is our own ssh's stdout, so a pre-bound port costs one retry
+	# and nothing more. The entropy is defense in depth, not the fix.
+	_u=$(cat /proc/sys/kernel/random/uuid 2>/dev/null); _u=${_u%%-*}
+	[ -n "$_u" ] || _u=0
+	r_lport=$(( 20000 + ((0x$_u + $$) % 19000) ))
 	r_valid_port "$r_lport" || r_die "could not derive a local forwarding port"
 
 	# Without an explicit key, ssh would fall back to an agent and then to
@@ -370,7 +377,7 @@ rfetch() {
 	r_fetch_body=$(printf '%s' "$_out" | sed '$d')
 }
 
-# r_json_ok -- is $1 one COMPLETE JSON object? No JSON parser is guaranteed
+# r_json_ok -- is $1 one COMPLETE JSON value -- object or array? No JSON parser
 # in a root helper's environment (no jq on OpenWrt; jsonfilter belongs to
 # rpcd's process, not to this script), yet member-list embeds controller
 # bodies raw into a larger array, where one bad body would make every OTHER
@@ -399,10 +406,7 @@ r_json_ok() {
 				}
 				if (c == "\"") { s = 1; continue }
 				if (c == "{" || c == "[") {
-					if (st == "") {
-						if (c != "{") { bad = 1; exit }
-						ob_seen = 1
-					}
+					if (st == "") ob_seen = 1
 					st = st c
 				} else if (c == "}" || c == "]") {
 					l = substr(st, length(st), 1)
@@ -414,6 +418,20 @@ r_json_ok() {
 		}
 		END { if (bad == 1 || ob_seen != 1 || st != "" || s == 1 || e == 1) exit 1 }
 	'
+}
+
+# r_emit_val <body> <code> -- like r_emit, but a body that is not one complete
+# JSON value is embedded as a STRING instead of raw. ctl-get and peer-list
+# used to embed whatever the controller returned; a hostile or hijacked one
+# could close the envelope early and inject top-level fields (code, body,
+# error) into the page. An escaped string cannot add structure.
+r_emit_val() {
+	case "$1" in
+		'{'*'}'|'['*']')
+			if r_json_ok "$1"; then r_emit "$1" "$2"; else r_emit "\"$(r_esc "$1")\"" "$2"; fi
+			;;
+		*) r_emit "\"$(r_esc "$1")\"" "$2" ;;
+	esac
 }
 
 # Wrap a raw JSON body alongside a status code. The body is already JSON, so it
@@ -558,7 +576,7 @@ ctl-get)
 	_b=$r_ctl_body
 	_c=$r_ctl_code
 	r_tunnel_down
-	r_emit "$_b" "${_c:-0}"
+	r_emit_val "$_b" "${_c:-0}"
 	;;
 
 # peer-list <section> -- the controller's /peer endpoint, verbatim.
@@ -574,7 +592,7 @@ peer-list)
 	_b=$r_ctl_body
 	_c=$r_ctl_code
 	r_tunnel_down
-	r_emit "$_b" "${_c:-0}"
+	r_emit_val "$_b" "${_c:-0}"
 	;;
 
 # member-list <section> <nwid> -- every member of one network in TWO ssh
