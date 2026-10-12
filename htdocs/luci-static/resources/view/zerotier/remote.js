@@ -401,11 +401,12 @@ function networksPanel(section) {
 		}, [ _('Delete') ]);
 
 		var members = E('div', { 'style': 'margin-top:6px; padding-left:12px;' });
-		var mToggle = E('button', { 'class': 'cbi-button' }, [ _('Members') ]);
-		mToggle.addEventListener('click', function() {
+		function toggleMembers() {
 			if (members.firstChild) { while (members.firstChild) members.removeChild(members.firstChild); return; }
 			loadMembers(nw.nwid, members);
-		});
+		}
+		var mToggle = E('button', { 'class': 'cbi-button' }, [ _('Members') ]);
+		mToggle.addEventListener('click', toggleMembers);
 
 		var cfg = E('div', { 'style': 'margin-top:8px; padding-left:12px;' }, [
 			E('div', { 'style': 'display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:6px;' }, [
@@ -450,7 +451,9 @@ function networksPanel(section) {
 				 * character. Fixed layout honours the column widths below. */
 				'style': 'table-layout:fixed; width:100%;'
 			}, [ E('tr', {}, [
-				E('td', { 'style': 'width:170px; font-family:monospace; white-space:nowrap;' }, [ nw.nwid ]),
+				E('td', { 'style': 'width:170px; font-family:monospace; white-space:nowrap;' }, [
+				E('a', { 'href': '#', 'title': _('Members'), 'click': function(ev) { ev.preventDefault(); toggleMembers(); } }, [ nw.nwid ])
+			]),
 				E('td', { 'style': 'width:auto;' }, [ nameWrap ]),
 				E('td', { 'style': 'width:90px; text-align:center; white-space:nowrap;' }, [ bcast ]),
 				E('td', { 'style': 'width:280px; text-align:right;' }, [
@@ -1151,14 +1154,16 @@ return view.extend({
 						var isOpen = detail.style.display === 'block';
 						detail.style.display = isOpen ? 'none' : 'block';
 						toggle.textContent = isOpen ? _('Manage') : _('Hide');
-						if (!isOpen && !detail.firstChild) {
-							detail.appendChild(E('h4', {}, [_('Diagnostics')]));
-							detail.appendChild(diagnostics(h.section, h));
-							detail.appendChild(E('h4', {}, [_('Networks')]));
-							detail.appendChild(networksPanel(h.section));
-							detail.appendChild(E('h4', {}, [_('Moon')]));
-							detail.appendChild(moonPanel(h.section));
-						}
+					if (!isOpen && !detail.firstChild) {
+						/* Member viewing is the daily task on a configured
+						 * network; diagnostics come last. */
+						detail.appendChild(E('h4', {}, [_('Networks')]));
+						detail.appendChild(networksPanel(h.section));
+						detail.appendChild(E('h4', {}, [_('Moon')]));
+						detail.appendChild(moonPanel(h.section));
+						detail.appendChild(E('h4', {}, [_('Diagnostics')]));
+						detail.appendChild(diagnostics(h.section, h));
+					}
 					});
 
 					var edit = E('button', { 'class': 'cbi-button' }, [ _('Edit') ]);
@@ -1198,6 +1203,13 @@ return view.extend({
 		return E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, [ _('ZeroTier'), ' - ', _('Remote Controller') ]),
 			E('div', { 'class': 'cbi-section' }, [
+				E('h3', {}, [_('Configured hosts')]),
+				listBox,
+				E('div', { 'style': 'margin-top:10px;' }, [ addBtn ])
+			]),
+			/* Explanatory text, not daily tooling: it sits at the bottom so the
+			 * working parts of the page come first. */
+			E('div', { 'class': 'cbi-section' }, [
 				E('h3', {}, [_('How remote management works')]),
 				E('div', { 'style': 'margin-bottom:8px;' }, [
 					E('p', {}, [ _('A ZeroTier controller or moon root must live on a server with a fixed public IP, reachable by SSH, with passwordless sudo for that user. The controller API has no TLS and refuses every non-loopback caller, so this page never talks to it directly: it opens an SSH tunnel from this router to the remote loopback interface and sends API calls through it. The controller authtoken is read over SSH on demand and is never stored here.') ])
@@ -1209,12 +1221,7 @@ return view.extend({
 					'style': 'border-left:3px solid #888; padding:6px 10px; opacity:0.85; font-size:13px;'
 				}, [
 					_('Requirements: a fixed public IP · SSH access · a keypair whose public key is in the remote authorized_keys · passwordless sudo · ZeroTier built with the controller (1.14.2, or a 1.16 nonfree build)')
-				])
-			]),
-			E('div', { 'class': 'cbi-section' }, [
-				E('h3', {}, [_('Configured hosts')]),
-				listBox,
-				E('div', { 'style': 'margin-top:10px;' }, [ addBtn ])
+			])
 			])
 		]);
 	}

@@ -204,6 +204,25 @@ stderr and continues. Two consequences are handled explicitly:
 
 ## Changelog
 
+### v2.2-r44
+
+**Layout: working content first**
+
+- **"How remote management works" moved to the bottom of the page.** It is
+  explanatory text, not daily tooling; the page now opens on the configured
+  hosts instead.
+- **Inside an expanded host the order is Networks → Moon → Diagnostics.**
+  Viewing the members of a configured network is the daily task for a real
+  administrator, so the least-frequently-needed panel comes last.
+- **Each Network ID is now a clickable link that behaves exactly like the
+  Members button.** Both go through one shared handler -- click to open the
+  member table, click again to close -- so the two paths cannot drift apart.
+  No new translatable strings: the link's title reuses the existing
+  "Members" msgid.
+- Verified in a real browser driving the real view code: page section order,
+  host detail order, ID-click opens and closes the members panel identically
+  to the button, plus the r43 sort regression suite -- 10/10.
+
 ### v2.2-r43
 
 **Sortable member columns**
