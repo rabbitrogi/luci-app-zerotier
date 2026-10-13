@@ -850,13 +850,17 @@ case "$1" in
 					remote_moon_apply)  set -- moon-apply "$_sect" "$_cf" ;;
 				esac
 
-				if [ ! -x /usr/bin/zerotier-remote.sh ]; then
-					json_init
-					json_add_int "code" 1
+if [ ! -x /usr/bin/zerotier-remote.sh ]; then
+				json_init
+				json_add_int "code" 1
+				if [ -f /usr/bin/zerotier-remote.sh ]; then
+					json_add_string "error" "zerotier-remote.sh is not executable (installed 0644; it must be 0755)"
+				else
 					json_add_string "error" "zerotier-remote.sh is missing"
-					json_dump
-					return
 				fi
+				json_dump
+				return
+			fi
 
 				# "$@" not $_args: the body is free-form JSON from the browser,
 				# and a member or network name may contain spaces. Building a

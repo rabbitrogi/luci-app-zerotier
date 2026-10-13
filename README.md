@@ -204,6 +204,26 @@ stderr and continues. Two consequences are handled explicitly:
 
 ## Changelog
 
+### v2.2-r45
+
+**A packaging regression that only bites on fresh installs**
+
+- `zerotier-remote.sh` was committed `100644`, so every `git clone` based
+  build installed `/usr/bin/zerotier-remote.sh` **non-executable**. Every
+  scp deployment in this project chmod'd it explicitly afterwards, which is
+  why the bug stayed invisible until the first full firmware build+install --
+  where rpcd's `[ ! -x ]` guard then reported the file as *missing*. The file
+  was never missing; it was present and unusable. It is now committed
+  `100755`.
+- The rpcd guard now distinguishes the two cases: *"zerotier-remote.sh is
+  missing"* when the file is absent, *"zerotier-remote.sh is not executable
+  (installed 0644; it must be 0755)"* when it is present but unusable, so the
+  next occurrence is diagnosable in seconds rather than a search.
+- Note the hotplug script at `root/etc/hotplug.d/net/99-luci-zerotier` is
+  deliberately left at `0644`: OpenWrt's `/sbin/hotplug-call` *sources* files
+  (`[ -f $script ] && . $script`), it never execs them, so its mode is
+  correct as-is.
+
 ### v2.2-r44
 
 **Layout: working content first**
