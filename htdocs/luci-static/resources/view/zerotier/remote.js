@@ -172,11 +172,15 @@ function diagnostics(section, host) {
 
 /* ---------------------------------------------------------------- networks */
 
-function networksPanel(section) {
-	var box = E('div', { 'style': 'margin-top:8px;' });
-	var refresh = E('button', { 'class': 'cbi-button cbi-button-action' }, [ _('Refresh') ]);
-	var add = E('button', { 'class': 'cbi-button cbi-button-add' }, [ _('Create network') ]);
-	var table = E('div', {});
+	function networksPanel(section) {
+		var box = E('div', { 'style': 'margin-top:8px;' });
+		var refresh = E('button', { 'class': 'cbi-button cbi-button-action' }, [ _('Refresh') ]);
+		var add = E('button', { 'class': 'cbi-button cbi-button-add' }, [ _('Create network') ]);
+		var table = E('div', {});
+		/* Latest network-list responses keyed by nwid: the IP manager needs the
+		 * network's routes without another controller round-trip. Replaced on
+		 * every load so it always matches what is on screen. */
+		var netsById = {};
 
 	/* One row of the pool editor. The pool is {ipRangeStart, ipRangeEnd} and
 	 * the route needs a CIDR target, so start/end are validated separately. */
@@ -665,6 +669,114 @@ function networksPanel(section) {
 		/* Inline edits post single-field bodies on purpose: the controller
 		 * merges presence-checked scalars, and the ztncui reference UI posts
 		 * single fields against this same controller in production use. */
+		/* ztncui-style read-only member detail: every field of the controller's
+		 * member record in key order, then the live peer object pretty-printed.
+		 * The cached model already holds all of it -- no RPC is needed. */
+		function openMemberDetail(m) {
+			var tbl = E('tbody', {});
+			Object.keys(m).sort().forEach(function(k) {
+				var v = m[k];
+				tbl.appendChild(E('tr', {}, [
+					E('td', { 'style': 'padding-right:14px; font-family:monospace; white-space:nowrap; vertical-align:top;' }, [ k + ':' ]),
+					E('td', { 'style': 'font-family:monospace; word-break:break-all;' }, [
+						E('code', {}, [ (v == null) ? '' : (typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v)) ])
+					])
+				]));
+			});
+			var peer = peerMap[m.id];
+			if (peer)
+				tbl.appendChild(E('tr', {}, [
+					E('td', { 'style': 'padding-right:14px; font-family:monospace; vertical-align:top;' }, [ 'peer:' ]),
+					E('td', { 'style': 'font-family:monospace; white-space:pre; word-break:break-all;' }, [ E('code', {}, [ JSON.stringify(peer, null, 2) ]) ])
+				]));
+			var body = E('div', {}, [
+				E('h4', {}, [ (m.name || '-') + ' (' + m.id + ')' ]),
+				E('table', { 'class': 'table' }, [ tbl ]),
+				E('div', { 'style': 'margin-top:10px; text-align:right;' }, [
+					E('button', { 'class': 'cbi-button', 'click': function() { ui.hideModal(); } }, [ _('Close') ])
+				])
+			]);
+			ui.showModal(_('Member detail'), body);
+		}
+
+		/* ztncui-style IP management: list the member's IPs with per-row delete,
+		 * plus one input row to append a new one, and the network's managed
+		 * routes read-only below. The API replaces ipAssignments wholesale, so
+		 * delete is current-minus-row and add is current-plus-one. */
+		function openIpManager(m) {
+			var busy = false, inp;
+			function commit(arr) {
+				if (busy) return;
+				busy = true;
+				L.resolveDefault(rpcMemberSet(section, nwid, m.id, JSON.stringify({ ipAssignments: arr })), {}).then(function(r2) {
+					busy = false;
+					if (r2 && r2.code === 0) {
+						m.ipAssignments = arr;
+						if (rowRefs[m.id] && rowRefs[m.id].paintIp) rowRefs[m.id].paintIp();
+						paint();
+					}
+					else ui.addNotification(null, E('span', { 'class': 'alert-message warning' }, [ errText(r2, _('Update failed')) ]), 'warning');
+				});
+			}
+			var body = E('div', {});
+			function paint() {
+				while (body.firstChild) body.removeChild(body.firstChild);
+				body.appendChild(E('div', { 'style': 'display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap;' }, [
+					E('h4', {}, [ _('Member name') + ': ', E('b', {}, [ m.name || '-' ]) ]),
+					E('h4', {}, [ _('ZeroTier address') + ': ', E('b', { 'style': 'font-family:monospace;' }, [ m.id ]) ])
+				]));
+				var rows = E('tbody', {});
+				(m.ipAssignments || []).forEach(function(ip, i) {
+					rows.appendChild(E('tr', {}, [
+						E('td', { 'style': 'width:70px; text-align:right;' }, [
+							E('button', { 'class': 'cbi-button cbi-button-remove', 'click': function() {
+								commit((m.ipAssignments || []).filter(function(_, j) { return j !== i; }));
+							} }, [ _('Delete') ])
+						]),
+						E('td', { 'style': 'font-family:monospace;' }, [ ip ])
+					]));
+				});
+				inp = E('input', { 'type': 'text', 'placeholder': _('IP address'), 'style': 'font-family:monospace;' });
+				inp.addEventListener('keydown', function(ev) { if (ev.keyCode === 13) { ev.preventDefault(); add(); } });
+				rows.appendChild(E('tr', {}, [
+					E('td', { 'style': 'text-align:right;' }, [
+						E('button', { 'class': 'cbi-button cbi-button-add', 'click': add }, [ _('Add') ])
+					]),
+					E('td', {}, [ inp ])
+				]));
+				body.appendChild(E('table', { 'class': 'table' }, [
+					E('tr', {}, [ E('th', {}), E('th', {}, [ _('IP address') ]) ]), rows
+				]));
+				var nw = netsById[nwid] || {};
+				var routes = nw.routes || [];
+				body.appendChild(E('h4', { 'style': 'margin-top:14px;' }, [ _('Managed routes') ]));
+				var rt = E('tbody', {});
+				routes.forEach(function(r) {
+					rt.appendChild(E('tr', {}, [
+						E('td', { 'style': 'font-family:monospace;' }, [ r.target || '' ]),
+						E('td', { 'style': 'font-family:monospace;' }, [ r.via || '' ])
+					]));
+				});
+				if (!routes.length) rt.appendChild(E('tr', {}, [ E('td', { 'colspan': '2', 'style': 'color:orange;' }, [ _('No route') ]) ]));
+				body.appendChild(E('table', { 'class': 'table' }, [
+					E('tr', {}, [ E('th', {}, [ _('Target') ]), E('th', {}, [ _('Gateway') ]) ]), rt
+				]));
+				body.appendChild(E('div', { 'style': 'margin-top:10px; text-align:right;' }, [
+					E('button', { 'class': 'cbi-button', 'click': function() { ui.hideModal(); } }, [ _('Close') ])
+				]));
+			}
+			function add() {
+				var v = inp.value.trim();
+				if (!isIp(v)) {
+					ui.addNotification(null, E('span', { 'class': 'alert-message warning' }, [ _('IP must be an IPv4 address') ]), 'warning');
+					return;
+				}
+				commit((m.ipAssignments || []).concat(v));
+			}
+			paint();
+			ui.showModal(_('IP assignments') + ' — ' + (m.name || m.id), body);
+		}
+
 		function memberRow(m) {
 			var mid = m.id;
 			var rmBusy = false;
@@ -752,7 +864,6 @@ function networksPanel(section) {
 		}
 
 			var ipTd = E('td', { 'style': 'width:13%; font-family:monospace; white-space:nowrap;' }, []);
-			var ipBusy = false, ipEditing = false;
 			function drawIp() {
 			while (ipTd.firstChild) ipTd.removeChild(ipTd.firstChild);
 			var ips = m.ipAssignments || [];
@@ -770,49 +881,7 @@ function networksPanel(section) {
 				]) ]);
 			ipTd.appendChild(clickable);
 		}
-			function startIpEdit() {
-				if (ipBusy) return;
-				ipEditing = true;
-				while (ipTd.firstChild) ipTd.removeChild(ipTd.firstChild);
-				var inp = E('input', { 'type': 'text', 'value': (m.ipAssignments || []).join(', '), 'style': 'width:100%; box-sizing:border-box; font-family:monospace;' });
-				ipTd.appendChild(inp);
-				if (inp.focus) inp.focus();
-				var afterKey = false;
-				function close() { ipEditing = false; drawIp(); }
-				function doCommit() {
-					var raw = inp.value.trim(), arr = [], i;
-					if (raw !== '') {
-						arr = raw.split(',');
-						for (i = 0; i < arr.length; i++) {
-							arr[i] = arr[i].trim();
-							if (!isIp(arr[i])) {
-								ui.addNotification(null, E('span', { 'class': 'alert-message warning' }, [ _('Managed IPs must be IPv4 addresses, comma-separated') ]), 'warning');
-								return;
-							}
-						}
-					}
-					if (arr.join(',') === (m.ipAssignments || []).join(',') || ipBusy) { close(); return; }
-					ipBusy = true;
-					inp.style.borderColor = 'orange';
-					L.resolveDefault(rpcMemberSet(section, nwid, mid, JSON.stringify({ ipAssignments: arr })), {}).then(function(r2) {
-						ipBusy = false;
-						if (r2 && r2.code === 0) { m.ipAssignments = arr; close(); }
-						else {
-							flashBorder(inp, 'red');
-							ui.addNotification(null, E('span', { 'class': 'alert-message warning' }, [ errText(r2, _('Update failed')) ]), 'warning');
-						}
-					});
-				}
-				inp.addEventListener('blur', function() {
-					if (afterKey) { afterKey = false; return; }
-					if (ipEditing) doCommit();
-				});
-				inp.addEventListener('keydown', function(ev) {
-					if (ev.keyCode === 13) { ev.preventDefault(); afterKey = true; doCommit(); }
-					else if (ev.keyCode === 27) { inp.value = (m.ipAssignments || []).join(', '); close(); }
-				});
-			}
-			ipTd.addEventListener('click', function() { if (!ipEditing) startIpEdit(); });
+			ipTd.addEventListener('click', function() { openIpManager(m); });
 			drawIp();
 
 			function statusContent() {
@@ -837,8 +906,8 @@ function networksPanel(section) {
 		var tr = E('tr', {}, [
 			E('td', { 'style': 'width:34px; text-align:center;' }, [ rm ]),
 			E('td', { 'style': 'width:19%;' }, [ nameI ]),
-			E('td', { 'style': 'width:12%; font-family:monospace; white-space:nowrap;' }, [
-				E('code', {}, [ E('a', { 'href': '#', 'click': function(ev) { ev.preventDefault(); } }, [ mid ]) ])
+			E('td', { 'style': 'width:12%; white-space:nowrap;' }, [
+				E('a', { 'href': '#', 'style': 'font-family:monospace;', 'title': _('Member detail'), 'click': function(ev) { ev.preventDefault(); openMemberDetail(m); } }, [ mid ])
 			]),
 			checkboxTd('authorized'),
 			checkboxTd('activeBridge'),
@@ -1030,7 +1099,8 @@ function networksPanel(section) {
 			 * forms stretch the nwid column (see netRow). So the header goes in
 			 * its own table and each network follows as a sibling block. */
 			table.appendChild(E('table', { 'class': 'table' }, [ head ]));
-			nets.forEach(function(nw) { table.appendChild(netRow(nw)); });
+			netsById = {};
+			nets.forEach(function(nw) { netsById[nw.nwid] = nw; table.appendChild(netRow(nw)); });
 			var skipped = res.skipped || [];
 			if (skipped.length) {
 				table.appendChild(E('div', { 'style': 'color:red; margin-top:6px;' }, [
@@ -1146,7 +1216,10 @@ return view.extend({
 				hosts.forEach(function(h) {
 					var detail = E('div', { 'style': 'display:none; margin:8px 0 16px 0; padding-left:12px; border-left:3px solid #ccc;' });
 					var toggle = E('button', { 'class': 'cbi-button cbi-button-action' }, [ _('Manage') ]);
-					toggle.addEventListener('click', function() {
+					/* Shared by the Manage button and the host label: both paths
+					 * open and close the same detail panel, so they can never
+					 * disagree about the panel's state. */
+					function toggleDetail() {
 						/* A freshly created div has display '', not 'none', so the
 						 * open test has to be for 'block' -- testing "!== 'none'"
 						 * reads the initial state as already-open and the first
@@ -1164,7 +1237,8 @@ return view.extend({
 						detail.appendChild(E('h4', {}, [_('Diagnostics')]));
 						detail.appendChild(diagnostics(h.section, h));
 					}
-					});
+					}
+					toggle.addEventListener('click', toggleDetail);
 
 					var edit = E('button', { 'class': 'cbi-button' }, [ _('Edit') ]);
 					edit.addEventListener('click', function() { hostEditor(h.section, h, reload); });
@@ -1178,8 +1252,10 @@ return view.extend({
 
 					listBox.appendChild(E('div', { 'class': 'cbi-section' }, [
 						E('div', { 'style': 'display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;' }, [
-							E('div', {}, [
-								E('strong', {}, [ h.name ]),
+						E('div', {}, [
+							E('a', { 'href': '#', 'style': 'color:inherit; cursor:pointer; text-decoration:none;', 'title': _('Manage'), 'click': function(ev) { ev.preventDefault(); toggleDetail(); } }, [
+								E('strong', {}, [ h.name ])
+							]),
 								E('div', { 'style': 'font-family:monospace; font-size:12px; color:#666;' }, [
 									h.user + '@' + h.host + ':' + h.port + _(' (controller port ') + h.controller_port + ')'
 								]),

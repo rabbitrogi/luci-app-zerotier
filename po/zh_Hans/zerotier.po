@@ -121,6 +121,9 @@ msgstr "无法连接到 ZeroTier 服务"
 msgid "Cannot read moons (is the ZeroTier service running?)"
 msgstr "无法读取 moon（ZeroTier 服务是否在运行？）"
 
+msgid "Close"
+msgstr "关闭"
+
 msgid "Collecting data..."
 msgstr "正在收集数据..."
 
@@ -253,6 +256,9 @@ msgstr "按名称、地址或 IP 筛选"
 msgid "First IP"
 msgstr "起始 IP"
 
+msgid "Gateway"
+msgstr "网关"
+
 msgid "General options"
 msgstr "常规设置"
 
@@ -271,11 +277,20 @@ msgstr "接口信息"
 msgid "IP Address"
 msgstr "IP 地址"
 
+msgid "IP address"
+msgstr "IP 地址"
+
 msgid "IP assignment"
 msgstr "IP 分配"
 
 msgid "IP assignment pools"
 msgstr "IP 地址池"
+
+msgid "IP assignments"
+msgstr "IP 分配"
+
+msgid "IP must be an IPv4 address"
+msgstr "IP 必须为 IPv4 地址"
 
 msgid "Label"
 msgstr "标签"
@@ -312,6 +327,12 @@ msgstr "管理"
 
 msgid "Managed IPs must be IPv4 addresses, comma-separated"
 msgstr "托管 IP 必须为 IPv4 地址，以逗号分隔"
+
+msgid "Managed routes"
+msgstr "托管路由"
+
+msgid "Member detail"
+msgstr "成员详情"
 
 msgid "Member ID"
 msgstr "成员 ID"
@@ -684,6 +705,9 @@ msgstr "是"
 
 msgid "ZeroTier"
 msgstr "ZeroTier"
+
+msgid "ZeroTier address"
+msgstr "ZeroTier 地址"
 
 msgid "ZeroTier installed"
 msgstr "ZeroTier 已安装"
