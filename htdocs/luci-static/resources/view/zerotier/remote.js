@@ -841,7 +841,32 @@ function diagnostics(section, host) {
 						name: '', authorized: false, activeBridge: false, ipAssignments: [], noAutoAssignIps: false
 					})), {}).then(function() { loadMembers(nwid, into); });
 				}
-			}, [ '✕' ]);
+			}, [ trashIcon() ]);
+
+		/* ztncui uses glyphicon-trash; this LuCI theme has no Bootstrap
+		 * Glyphicons, so the can is drawn inline instead of loading a font. */
+		function trashIcon() {
+			var ns = 'http://www.w3.org/2000/svg';
+			var svg = document.createElementNS(ns, 'svg');
+			svg.setAttribute('viewBox', '0 0 16 16');
+			svg.setAttribute('width', '12');
+			svg.setAttribute('height', '12');
+			svg.setAttribute('fill', 'currentColor');
+			svg.setAttribute('aria-hidden', 'true');
+			var parts = [
+				'M2 2h12v1H2z',
+				'M3 4h10l-.8 10.2A2 2 0 0 1 10.2 16H5.8A2 2 0 0 1 3.8 14.2L3 4z',
+				'M6 6h1v7H6z',
+				'M8.5 6h1v7h-1z',
+				'M11 6h1v7h-1z'
+			];
+			parts.forEach(function(d) {
+				var p = document.createElementNS(ns, 'path');
+				p.setAttribute('d', d);
+				svg.appendChild(p);
+			});
+			return svg;
+		}
 
 			var nameI = E('input', { 'type': 'text', 'value': m.name || '', 'style': 'width:100%; box-sizing:border-box;' });
 			var nameBusy = false, nameAfterKey = false;

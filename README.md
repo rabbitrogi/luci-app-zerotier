@@ -204,6 +204,27 @@ stderr and continues. Two consequences are handled explicitly:
 
 ## Changelog
 
+### v2.2-r49
+
+**Deauthorization verified end to end, and a proper trash can**
+
+- **Kick/rejoin cycle confirmed on a real member** (`017c6a82b7`, test
+  controller): `authorized: true → false → true` all return `code: 0` with no
+  anomalies. After the kick its IP stays in the member record, and re-auth
+  restores *the same address* (`192.168.192.69`) with no reassignment needed.
+  IP persistence across revoke/restore is exactly what the r36 measurement
+  had predicted.
+- **The deauthorize icon is now a trash can**, drawn inline as SVG (can with
+  lid and three stripes), instead of the bare `✕`. ztncui uses
+  `glyphicon-trash`, but this LuCI theme ships no Bootstrap Glyphicons, so
+  the glyph is drawn instead of loading a font. Verified in a real browser:
+  SVG present, no `✕` left, sort and layout regressions intact -- 5/5.
+- Correcting an earlier audit note: `allowManaged`, `allowGlobal`,
+  `allowDefault`, `allowDNS` are **client-side flags**, already present as
+  `form.Flag` rows in `general.js` basic settings. They are per-client
+  preferences, not controller-managed network config, so they do not belong
+  in the remote controller's network editor. Nothing to add there.
+
 ### v2.2-r48
 
 **"Detail for network" below the members table, matching ztncui**
