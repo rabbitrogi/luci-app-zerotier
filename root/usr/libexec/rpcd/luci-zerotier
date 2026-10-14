@@ -130,6 +130,8 @@ case "$1" in
 			json_add_string "user" "string"
 			json_add_string "controller_port" "string"
 			json_add_string "private_key" "string"
+			json_add_string "mode" "string"
+			json_add_string "api_key" "string"
 		json_close_object
 		json_add_object "remote_host_del"
 			json_add_string "section" "string"
@@ -713,14 +715,25 @@ case "$1" in
 					json_add_string "host" "$_h"
 					json_add_string "port" "$(uci -q get "zerotier.$_s.port" || echo 22)"
 					json_add_string "user" "$(uci -q get "zerotier.$_s.user" || echo root)"
-					json_add_string "controller_port" "$(uci -q get "zerotier.$_s.controller_port" || echo 9993)"
-					json_add_string "key_path" "$_kp"
-					if [ -f "$_kp" ]; then
-						json_add_boolean "key_present" 1
-					else
-						json_add_boolean "key_present" 0
-					fi
-					json_close_object
+				json_add_string "controller_port" "$(uci -q get "zerotier.$_s.controller_port" || echo 9993)"
+				json_add_string "mode" "$(uci -q get "zerotier.$_s.mode" || echo ssh)"
+				json_add_string "key_path" "$_kp"
+				if [ -f "$_kp" ]; then
+					json_add_boolean "key_present" 1
+				else
+					json_add_boolean "key_present" 0
+				fi
+				if [ -f "/etc/zerotier/remote/$_s.token" ]; then
+					json_add_boolean "token_present" 1
+				else
+					json_add_boolean "token_present" 0
+				fi
+				if [ -f "/etc/zerotier/remote/$_s.direct" ]; then
+					json_add_boolean "direct" 1
+				else
+					json_add_boolean "direct" 0
+				fi
+				json_close_object
 				done
 				json_close_array
 				json_dump
@@ -737,8 +750,10 @@ case "$1" in
 				json_get_var _rport port 2>/dev/null
 				json_get_var _ruser user 2>/dev/null
 				json_get_var _cport controller_port 2>/dev/null
-				json_get_var _pkey private_key 2>/dev/null
-				unset input
+			json_get_var _pkey private_key 2>/dev/null
+			json_get_var _mode mode 2>/dev/null
+			json_get_var _apikey api_key 2>/dev/null
+			unset input
 
 				json_init
 
@@ -754,12 +769,18 @@ case "$1" in
 				esac
 				[ -z "$_err" ] || { json_add_int "code" 1; json_add_string "error" "$_err"; json_dump; return; }
 
+			_mode=${_mode:-ssh}
+			case "$_mode" in
+				ssh|direct) ;;
+				*) json_add_int "code" 1; json_add_string "error" "access mode must be ssh or direct"; json_dump; return ;;
+			esac
+
+			if [ "$_mode" = "ssh" ]; then
 				case "$_ruser" in
 					''|[a-zA-Z_]*) case "$_ruser" in *[!a-zA-Z0-9_-]*) _err="invalid ssh user" ;; esac ;;
 					*) _err="invalid ssh user" ;;
 				esac
 				[ -z "$_err" ] || { json_add_int "code" 1; json_add_string "error" "$_err"; json_dump; return; }
-
 				for _p in "$_rport" "$_cport"; do
 					case "$_p" in
 						''|*[!0-9]*) _err="ports must be numeric" ;;
@@ -767,12 +788,30 @@ case "$1" in
 					esac
 					[ -z "$_err" ] || { json_add_int "code" 1; json_add_string "error" "$_err"; json_dump; return; }
 				done
+			else
+				case "$_cport" in
+					''|*[!0-9]*) _err="controller port must be numeric" ;;
+					*) [ "$_cport" -ge 1 ] 2>/dev/null && [ "$_cport" -le 65535 ] 2>/dev/null || _err="port out of range" ;;
+				esac
+				[ -z "$_err" ] || { json_add_int "code" 1; json_add_string "error" "$_err"; json_dump; return; }
+			fi
 
-				_rport=${_rport:-22}
-				_ruser=${_ruser:-root}
-				_cport=${_cport:-9993}
-				_hname=${_hname:-$_sect}
-				_kp="/etc/zerotier/remote/$_sect.key"
+			if [ "$_mode" = "direct" ]; then
+				case "$_apikey" in
+					'') [ -f "/etc/zerotier/remote/$_sect.token" ] || { json_add_int "code" 1; json_add_string "error" "api_key is required for direct mode"; json_dump; return; } ;;
+					*[!A-Za-z0-9]*) json_add_int "code" 1; json_add_string "error" "api_key must be alphanumeric"; json_dump; return ;;
+				esac
+				if [ -n "$_apikey" ]; then
+					(umask 077; printf '%s\n' "$_apikey" > "/etc/zerotier/remote/$_sect.token") || { json_add_int "code" 1; json_add_string "error" "could not write the token file"; json_dump; return; }
+					chmod 600 "/etc/zerotier/remote/$_sect.token" 2>/dev/null
+				fi
+			fi
+
+			_rport=${_rport:-22}
+			_ruser=${_ruser:-root}
+			_cport=${_cport:-9993}
+			_hname=${_hname:-$_sect}
+			_kp="/etc/zerotier/remote/$_sect.key"
 
 				mkdir -p /etc/zerotier/remote || { json_add_int "code" 1; json_add_string "error" "cannot create /etc/zerotier/remote"; json_dump; return; }
 				chmod 700 /etc/zerotier/remote 2>/dev/null
@@ -796,6 +835,10 @@ case "$1" in
 				uci set "zerotier.$_sect.user=$_ruser"
 				uci set "zerotier.$_sect.controller_port=$_cport"
 				uci set "zerotier.$_sect.key_path=$_kp"
+			uci set "zerotier.$_sect.mode=$_mode"
+			# A config change invalidates any cached transport decision: the old
+			# direct marker or probe-failure note belongs to the old settings.
+			rm -f "/etc/zerotier/remote/$_sect.direct" "/etc/zerotier/remote/$_sect.nodirect" 2>/dev/null
 				uci commit zerotier || { json_add_int "code" 1; json_add_string "error" "uci commit failed"; json_dump; return; }
 
 				json_add_int "code" 0
@@ -815,9 +858,10 @@ case "$1" in
 				_kp=$(uci -q get "zerotier.$_sect.key_path")
 				[ -n "$_kp" ] || _kp="/etc/zerotier/remote/$_sect.key"
 				# Only unlink inside our own managed directory.
-				case "$_kp" in
-					/etc/zerotier/remote/*.key) [ -f "$_kp" ] && rm -f "$_kp" ;;
-				esac
+			case "$_kp" in
+				/etc/zerotier/remote/*.key) [ -f "$_kp" ] && rm -f "$_kp" ;;
+			esac
+			rm -f "/etc/zerotier/remote/$_sect.token" "/etc/zerotier/remote/$_sect.direct" "/etc/zerotier/remote/$_sect.nodirect" 2>/dev/null
 				uci -q delete "zerotier.$_sect"
 				uci commit zerotier
 				json_add_int "code" 0

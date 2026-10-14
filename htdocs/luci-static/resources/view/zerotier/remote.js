@@ -33,7 +33,7 @@ var ZT_TR = /^zh/i.test(document.documentElement.lang || '')
 var rpcHostList = rpc.declare({ object: 'luci-zerotier', method: 'remote_list' });
 var rpcHostSet = rpc.declare({
 	object: 'luci-zerotier', method: 'remote_host_set',
-	params: [ 'section', 'name', 'host', 'port', 'user', 'controller_port', 'private_key' ]
+	params: [ 'section', 'name', 'host', 'port', 'user', 'controller_port', 'private_key', 'mode', 'api_key' ]
 });
 var rpcHostDel = rpc.declare({ object: 'luci-zerotier', method: 'remote_host_del', params: [ 'section' ] });
 var rpcDiagnose = rpc.declare({ object: 'luci-zerotier', method: 'remote_diagnose', params: [ 'section' ] });
@@ -65,6 +65,11 @@ function hostEditor(section, host, onSaved) {
 
 	var nameI = E('input', { 'type': 'text', 'id': 'zt_r_name', 'value': (host && host.name) || '', 'placeholder': _('My controller') });
 	var hostI = E('input', { 'type': 'text', 'id': 'zt_r_host', 'value': (host && host.host) || '', 'placeholder': '203.0.113.10' });
+	var modeSel = E('select', {}, [
+		E('option', { 'value': 'ssh' }, [ _('SSH tunnel') ]),
+		E('option', { 'value': 'direct' }, [ _('ZeroTier direct') ])
+	]);
+	modeSel.value = (host && host.mode) || 'ssh';
 	var portI = E('input', { 'type': 'number', 'id': 'zt_r_port', 'value': (host && host.port) || '22', 'min': '1', 'max': '65535' });
 	var userI = E('input', { 'type': 'text', 'id': 'zt_r_user', 'value': (host && host.user) || 'root' });
 	var cportI = E('input', { 'type': 'number', 'id': 'zt_r_cport', 'value': (host && host.controller_port) || '27893', 'min': '1', 'max': '65535' });
@@ -73,6 +78,12 @@ function hostEditor(section, host, onSaved) {
 		'placeholder': isNew
 			? _('Required: paste the PRIVATE key of a keypair whose public half is in the remote ~/.ssh/authorized_keys')
 			: _('Leave blank to keep the stored key')
+	});
+	var apiI = E('input', {
+		'type': 'password', 'style': 'width:100%; font-family:monospace;',
+		'placeholder': isNew
+			? _('Required: the controller API token')
+			: _('Leave blank to keep the stored token')
 	});
 
 	var msg = E('div', { 'style': 'color:red; margin-top:6px;' });
@@ -83,9 +94,12 @@ function hostEditor(section, host, onSaved) {
 		msg.textContent = '';
 		saveBtn.disabled = true;
 		var sectName = f || ('zt' + Date.now().toString(36));
+		var m = modeSel.value;
 		L.resolveDefault(rpcHostSet(
 			sectName, nameI.value, hostI.value, portI.value,
-			userI.value, cportI.value, keyI.value), {})
+			userI.value, cportI.value,
+			(m === 'ssh') ? keyI.value : '',
+			m, (m === 'direct') ? apiI.value : ''), {})
 		.then(function(res) {
 			if (res && res.code === 0) {
 				hostEditor.close();
@@ -100,17 +114,35 @@ function hostEditor(section, host, onSaved) {
 		});
 	});
 
-	hostEditor.body = E('div', { 'class': 'cbi-section' }, [
-		E('h3', {}, [ isNew ? _('Add a remote host') : _('Edit remote host') ]),
-		E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('Label')]), E('div', {}, [ nameI ]) ]),
-		E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('Public IP or host')]), E('div', {}, [ hostI ]) ]),
-		E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('SSH port')]), E('div', {}, [ portI ]) ]),
-		E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('SSH user')]), E('div', {}, [ userI ]) ]),
-		E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('Controller port')]), E('div', {}, [ cportI, E('div', { 'class': 'cbi-value-description' }, [_('The port the controller API listens on, e.g. 27893. Only reachable through the SSH tunnel.')]) ]) ]),
-		E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('SSH private key')]), E('div', {}, [ keyI ]) ]),
-		msg,
-		E('div', { 'style': 'margin-top:10px; display:flex; gap:8px;' }, [ saveBtn, cancelBtn ])
-	]);
+		var modeRow = E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('Access mode')]), E('div', {}, [ modeSel ]) ]);
+		var portRow = E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('SSH port')]), E('div', {}, [ portI ]) ]);
+		var userRow = E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('SSH user')]), E('div', {}, [ userI ]) ]);
+		var keyRow = E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('SSH private key')]), E('div', {}, [ keyI ]) ]);
+		var apiRow = E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('API key')]), E('div', {}, [ apiI ]) ]);
+
+		hostEditor.body = E('div', { 'class': 'cbi-section' }, [
+			E('h3', {}, [ isNew ? _('Add a remote host') : _('Edit remote host') ]),
+			modeRow,
+			E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('Label')]), E('div', {}, [ nameI ]) ]),
+			E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('Public IP or host')]), E('div', {}, [ hostI ]) ]),
+			portRow,
+			userRow,
+			E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('Controller port')]), E('div', {}, [ cportI, E('div', { 'class': 'cbi-value-description' }, [_('The port the controller API listens on, e.g. 27893.')]) ]) ]),
+			keyRow,
+			apiRow,
+			msg,
+			E('div', { 'style': 'margin-top:10px; display:flex; gap:8px;' }, [ saveBtn, cancelBtn ])
+		]);
+		function applyMode() {
+			var m = modeSel.value;
+			portRow.style.display = (m === 'direct') ? 'none' : '';
+			userRow.style.display = (m === 'direct') ? 'none' : '';
+			keyRow.style.display = (m === 'direct') ? 'none' : '';
+			apiRow.style.display = (m === 'direct') ? '' : 'none';
+			hostI.placeholder = (m === 'direct') ? '192.168.192.247' : '203.0.113.10';
+		}
+		modeSel.addEventListener('change', applyMode);
+		applyMode();
 	hostEditor.open();
 }
 
@@ -1257,10 +1289,15 @@ return view.extend({
 								E('strong', {}, [ h.name ])
 							]),
 								E('div', { 'style': 'font-family:monospace; font-size:12px; color:#666;' }, [
-									h.user + '@' + h.host + ':' + h.port + _(' (controller port ') + h.controller_port + ')'
+									(h.mode === 'direct' || h.direct)
+										? E('span', { 'style': 'color:green; font-weight:bold; margin-right:6px;' }, [ '[' + _('Direct') + ']' ])
+										: E('span', { 'style': 'color:#888; margin-right:6px;' }, [ '[SSH]' ]),
+									(h.mode === 'direct')
+										? (h.host + ':' + h.controller_port + _(' (ZeroTier direct)'))
+										: (h.user + '@' + h.host + ':' + h.port + _(' (controller port ') + h.controller_port + ')')
 								]),
-								h.key_present
-									? E('div', { 'style': 'font-size:12px; color:green;' }, [_('SSH key installed')])
+								h.key_present || h.mode === 'direct'
+									? (h.mode === 'direct' ? E('div', { 'style': 'font-size:12px; color:green;' }, [_('API token stored')]) : E('div', { 'style': 'font-size:12px; color:green;' }, [_('SSH key installed')]))
 									: E('div', { 'style': 'font-size:12px; color:red;' }, [_('No SSH key — add one before use')])
 							]),
 							E('div', { 'style': 'display:flex; gap:6px;' }, [ toggle, edit, del ])

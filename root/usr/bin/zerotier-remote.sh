@@ -139,16 +139,37 @@ r_load() {
 
 	r_name=$(rget "$r_sect" name "$r_sect")
 	r_host=$(rget "$r_sect" host)
-	r_user=$(rget "$r_sect" user root)
-	r_sport=$(rget "$r_sect" port 22)
 	r_cport=$(rget "$r_sect" controller_port 9993)
-	r_key=$(rget "$r_sect" key_path "/etc/zerotier/remote/$r_sect.key")
+	r_mode=$(rget "$r_sect" mode ssh)
+	r_tokfile=$(rget "$r_sect" token_path "/etc/zerotier/remote/$r_sect.token")
+	r_mark="/etc/zerotier/remote/$r_sect.direct"
+	r_ndmark="/etc/zerotier/remote/$r_sect.nodirect"
 
+	case "$r_mode" in
+		ssh|direct) ;;
+		*) r_die "unknown access mode '$r_mode'" ;;
+	esac
 	r_valid_host "$r_host" || r_die "invalid or empty host"
-	r_valid_user "$r_user" || r_die "invalid ssh user"
-	r_valid_port "$r_sport" || r_die "invalid ssh port"
 	r_valid_port "$r_cport" || r_die "invalid controller_port"
-	r_valid_path "$r_key" || r_die "invalid key_path"
+
+	if [ "$r_mode" = "direct" ]; then
+		# ZT direct: no ssh at all -- the controller is reached over the
+		# ZeroTier network with its API token, kept with the same 0600
+		# discipline as the ssh key.
+		[ -f "$r_tokfile" ] || r_die "api token file not found at $r_tokfile"
+		r_user=root; r_sport=22; r_key="$r_tokfile"
+		r_base="http://$r_host:$r_cport"
+	else
+		r_user=$(rget "$r_sect" user root)
+		r_sport=$(rget "$r_sect" port 22)
+		r_key=$(rget "$r_sect" key_path "/etc/zerotier/remote/$r_sect.key")
+		r_valid_user "$r_user" || r_die "invalid ssh user"
+		r_valid_port "$r_sport" || r_die "invalid ssh port"
+		r_valid_path "$r_key" || r_die "invalid key_path"
+		# Without an explicit key, ssh would fall back to an agent and then to
+		# password prompts, which would hang the rpcd call instead of failing it.
+		[ -f "$r_key" ] || r_die "ssh key not found at $r_key"
+	fi
 
 	# One local port per INVOCATION, not per host: load() and the members table
 	# both fire concurrent calls, and a shared port once let the loser borrow
@@ -281,6 +302,121 @@ r_tunnel_down() {
 	return 0
 }
 
+# r_direct_up -- build the auth header from the cached controller token. Used
+# by explicit direct mode and by the auto-upgraded SSH path alike: both keep
+# the token in $r_tokfile with the same 0600 discipline as the ssh key.
+r_direct_up() {
+	[ -f "$r_tokfile" ] || return 1
+	_t=$(cat "$r_tokfile" 2>/dev/null)
+	[ -n "$_t" ] || return 1
+	r_hf=$(mktemp "/tmp/zt_hf_$$_XXXXXX") || return 1
+	printf 'X-ZT1-Auth: %s' "$_t" > "$r_hf" || { rm -f "$r_hf"; r_hf=""; return 1; }
+	return 0
+}
+
+# r_zt_contains <ip> -- is the candidate inside a ZeroTier network this router
+# belongs to? This gate is what keeps the probe from ever sending the
+# controller token to a public address in cleartext -- the exact reason this
+# project tunnels over SSH in the first place.
+r_zt_contains() {
+	for _sn in $(zerotier-cli listnetworks 2>/dev/null | awk 'NF>=2 {print $NF}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' | sort -u); do
+		awk -v ip="$1" -v net="${_sn%/*}" -v bits="${_sn#*/}" 'BEGIN{
+			split(ip,a,"."); split(net,b,".");
+			ia=(a[1]*16777216)+(a[2]*65536)+(a[3]*256)+a[4];
+			na=(b[1]*16777216)+(b[2]*65536)+(b[3]*256)+b[4];
+			sh=32-bits;
+			exit((sh>=0 && sh<32 && int(ia/(2^sh))==int(na/(2^sh)))?0:1)}' && return 0
+	done
+	return 1
+}
+
+# r_probe_direct -- one-time discovery, run over an already-live SSH tunnel:
+# find the controller's ZeroTier addresses (each managed network's id starts
+# with the controller's 10-hex node address; its member record carries the
+# assigned ZT IPs), gate every candidate through r_zt_contains, and on the
+# first 200 persist the token and write the direct marker. Runs at most once:
+# a success writes $r_mark, a failure writes $r_ndmark and is not retried.
+r_probe_direct() {
+	[ -f "$r_mark" ] && return 0
+	[ -f "$r_ndmark" ] && return 1
+	command -v zerotier-cli >/dev/null 2>&1 || { touch "$r_ndmark"; return 1; }
+
+	rfetch /controller/network
+	[ "$r_fetch_code" = "200" ] || { touch "$r_ndmark"; return 1; }
+	_nwids=$(printf '%s' "$r_fetch_body" | grep -oE '"[0-9a-fA-F]{16}"' | tr -d '"')
+	[ -n "$_nwids" ] || { touch "$r_ndmark"; return 1; }
+
+	_cands="$r_host"
+	for _nw in $_nwids; do
+		_caddr=$(printf '%s' "$_nw" | cut -c1-10)
+		rfetch "/controller/network/$_nw/member/$_caddr"
+		[ "$r_fetch_code" = "200" ] || continue
+		_ips=$(printf '%s' "$r_fetch_body" | grep -oE '"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+"' | tr -d '"')
+		[ -n "$_ips" ] && _cands="$_cands $_ips"
+	done
+
+	for _ip in $_cands; do
+		case "$_ip" in *[!0-9.]*) continue ;; esac
+		r_zt_contains "$_ip" || continue
+		_code=$(curl -s -o /dev/null -m 6 -w '%{http_code}' -H @"$r_hf" "http://$_ip:$r_cport/controller" 2>/dev/null)
+		if [ "$_code" = "200" ]; then
+			# Persist the token so future direct calls need no SSH at all.
+			(umask 077; sed 's/^X-ZT1-Auth: //' "$r_hf" > "$r_tokfile") && printf 'http://%s:%s' "$_ip" "$r_cport" > "$r_mark" && rm -f "$r_ndmark" && return 0
+		fi
+	done
+	touch "$r_ndmark"
+	return 1
+}
+
+# r_transport_up -- one entry for every subcommand. Explicit direct mode goes
+# straight to the cached token; SSH mode first tries an existing direct
+# marker, otherwise opens the SSH tunnel and runs the one-time probe.
+r_transport_up() {
+	# A SIGKILLed call leaves its header file behind -- its trap cannot run,
+	# and the file holds the controller token. The pid in the name says
+	# whether the call that made it still exists; /proc/<pid> is the whole
+	# test, so a live call's file is never touched.
+	for _stale in /tmp/zt_hf_*; do
+		[ -e "$_stale" ] || continue
+		_sp=${_stale#/tmp/zt_hf_}; _sp=${_sp%%_*}
+		[ -d "/proc/$_sp" ] || rm -f "$_stale"
+	done
+
+	case "$r_mode" in
+		direct)
+			if ! r_direct_up; then
+				r_terr="could not load the api token for $r_name"
+				return 1
+			fi
+			;;
+		*)
+			if [ -f "$r_mark" ] && [ -f "$r_tokfile" ]; then
+				r_base=$(cat "$r_mark" 2>/dev/null)
+				if [ -n "$r_base" ] && r_direct_up; then
+					_code=$(curl -s -o /dev/null -m 6 -w '%{http_code}' -H @"$r_hf" "$r_base/controller" 2>/dev/null)
+					[ "$_code" = "200" ] && return 0
+					# Transient failure (e.g. controller just restarted): fall
+					# back to SSH for this call but keep the marker.
+					r_tunnel_down
+				fi
+			fi
+			r_base="http://127.0.0.1:$r_lport"
+			if ! r_tunnel_up; then
+				r_terr="could not open the ssh tunnel to $r_dest"
+				return 1
+			fi
+			r_probe_direct
+			;;
+	esac
+	return 0
+}
+
+# r_require_ssh -- diagnose and moon operations run remote shell commands and
+# cannot work over the API alone.
+r_require_ssh() {
+	[ "$r_mode" != "direct" ] || r_die "this operation requires ssh access (host is in direct mode)"
+}
+
 # Forward 127.0.0.1:<lport> to the remote's loopback control plane. Bound
 # explicitly to loopback so the forwarded port is never reachable from the LAN.
 r_tunnel_up() {
@@ -351,11 +487,11 @@ rctl() {
 		_out=$(curl -s --max-time 20 -X "$1" \
 			-H @"$r_hf" -H "Content-Type: application/json" \
 			--data-binary "$3" -w '\n%{http_code}' \
-			"http://127.0.0.1:$r_lport$2" 2>/dev/null)
+			"$r_base$2" 2>/dev/null)
 	else
 		_out=$(curl -s --max-time 20 -X "$1" \
 			-H @"$r_hf" -w '\n%{http_code}' \
-			"http://127.0.0.1:$r_lport$2" 2>/dev/null)
+			"$r_base$2" 2>/dev/null)
 	fi
 	r_ctl_code=$(printf '%s' "$_out" | tail -n1 | tr -dc '0-9')
 	r_ctl_body=$(printf '%s' "$_out" | sed '$d')
@@ -372,7 +508,7 @@ rctl() {
 rfetch() {
 	_out=$(curl -s --max-time 20 -X GET \
 		-H @"$r_hf" -w '\n%{http_code}' \
-		"http://127.0.0.1:$r_lport$1" 2>/dev/null)
+		"$r_base$1" 2>/dev/null)
 	r_fetch_code=$(printf '%s' "$_out" | tail -n1 | tr -dc '0-9')
 	r_fetch_body=$(printf '%s' "$_out" | sed '$d')
 }
@@ -484,6 +620,7 @@ case "$1" in
 # diagnose -- read-only survey. Never writes, so it is safe against production.
 diagnose)
 	r_load "$2"
+	r_require_ssh
 
 	# One round trip, not one per probe: the bounded-wait wrapper polls at 1s
 	# granularity, so eight separate ssh calls cost ~11s. A single script
@@ -571,7 +708,7 @@ ctl-get)
 	case "$_p" in
 		*..*|*%2f*|*%2F*) r_die "invalid path" ;;
 	esac
-	r_tunnel_up || { r_tunnel_down; r_die "could not open the ssh tunnel to $r_dest"; }
+	r_transport_up || { r_tunnel_down; r_die "$r_terr"; }
 	rctl GET "$_p"
 	_b=$r_ctl_body
 	_c=$r_ctl_code
@@ -587,7 +724,7 @@ ctl-get)
 # at a time. One fixed read-only GET is narrower than opening the front door.
 peer-list)
 	r_load "$2"
-	r_tunnel_up || { r_tunnel_down; r_die "could not open the ssh tunnel to $r_dest"; }
+	r_transport_up || { r_tunnel_down; r_die "$r_terr"; }
 	rctl GET /peer
 	_b=$r_ctl_body
 	_c=$r_ctl_code
@@ -613,7 +750,7 @@ peer-list)
 member-list)
 	r_load "$2"
 	r_valid_hex "$3" 16 || r_die "network id must be 16 hex digits"
-	r_tunnel_up || { r_tunnel_down; r_die "could not open the ssh tunnel to $r_dest"; }
+	r_transport_up || { r_tunnel_down; r_die "$r_terr"; }
 	rfetch "/controller/network/$3/member"
 	_code=$r_fetch_code
 	_map=$r_fetch_body
@@ -665,7 +802,7 @@ member-list)
 			(
 				curl -s --max-time 20 -X GET -H @"$r_hf" \
 					-w '\n%{http_code}' \
-					"http://127.0.0.1:$r_lport/controller/network/$3/member/$_mid" \
+					"$r_base/controller/network/$3/member/$_mid" \
 					> "$_d/$_mid" 2>/dev/null
 			) &
 			_pids="$_pids $!"
@@ -734,7 +871,7 @@ member-list)
 # handshake no matter how many networks the controller holds.
 network-list)
 	r_load "$2"
-	r_tunnel_up || { r_tunnel_down; r_die "could not open the ssh tunnel to $r_dest"; }
+	r_transport_up || { r_tunnel_down; r_die "$r_terr"; }
 	rfetch /controller/network
 	_code=$r_fetch_code
 	if [ "$_code" != "200" ]; then
@@ -798,7 +935,7 @@ ctl-network-set)
 		'{'*'}') ;;
 		*) r_die "network body must be a JSON object" ;;
 	esac
-	r_tunnel_up || { r_tunnel_down; r_die "could not open the ssh tunnel to $r_dest"; }
+	r_transport_up || { r_tunnel_down; r_die "$r_terr"; }
 	rctl POST "$_path" "$4"
 	_b=$r_ctl_body
 	_c=$r_ctl_code
@@ -811,7 +948,7 @@ ctl-network-set)
 ctl-network-del)
 	r_load "$2"
 	r_valid_hex "$3" 16 || r_die "network id must be 16 hex digits"
-	r_tunnel_up || { r_tunnel_down; r_die "could not open the ssh tunnel to $r_dest"; }
+	r_transport_up || { r_tunnel_down; r_die "$r_terr"; }
 	rctl DELETE "/controller/network/$3"
 	_c=$r_ctl_code
 	r_tunnel_down
@@ -830,7 +967,7 @@ ctl-member-set)
 		'{'*'}') ;;
 		*) r_die "member body must be a JSON object" ;;
 	esac
-	r_tunnel_up || { r_tunnel_down; r_die "could not open the ssh tunnel to $r_dest"; }
+	r_transport_up || { r_tunnel_down; r_die "$r_terr"; }
 	rctl POST "/controller/network/$3/member/$4" "$5"
 	_c=$r_ctl_code
 	r_tunnel_down
@@ -864,6 +1001,7 @@ ctl-member-set)
 
 moon-plan)
 	r_load "$2"
+	r_require_ssh
 	[ "$#" -eq 2 ] || r_die "extra moon roots are not supported yet: the remote host is the single root"
 	_sum=$(r_moon_digest)
 	printf '{"code":0,"confirm":"%s"\n' "$_sum"
@@ -873,6 +1011,7 @@ moon-plan)
 
 moon-apply)
 	r_load "$2"
+	r_require_ssh
 	_confirm="$3"
 	[ -n "$_confirm" ] || r_die "missing confirmation digest; run moon-plan first"
 	[ "$#" -eq 3 ] || r_die "extra moon roots are not supported yet: the remote host is the single root"

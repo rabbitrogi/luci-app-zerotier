@@ -204,6 +204,46 @@ stderr and continues. Two consequences are handled explicitly:
 
 ## Changelog
 
+### v2.2-r47
+
+**Two ways to reach a controller: SSH, and ZeroTier-direct**
+
+- **Every host can now be reached over the ZeroTier network itself.** A
+  ZeroTier controller daemon listens on 0.0.0.0, and any member of the same
+  network may call its API with just the auth token -- provided
+  `allowManagementFrom` covers the caller (loopback only by default). Direct
+  access measures ~0.15s per call against ~1.2s for the merged SSH connection,
+  roughly 8x faster.
+- **New host access mode in the editor:** `SSH tunnel` (the existing path) or
+  `ZeroTier direct` (controller ZT address + port + API token, stored with the
+  same 0600 discipline as the SSH key). Field visibility follows the mode;
+  the host row shows a `[Direct]` or `[SSH]` badge.
+- **SSH-mode hosts upgrade themselves automatically.** Once an SSH tunnel is
+  up, the helper discovers the controller's ZeroTier addresses from its own
+  member records (each network id begins with the controller's 10-hex node
+  address), gates every candidate through the local network subnets, and on
+  the first 200 persists the token and writes a direct marker. Every later
+  call goes direct; a transient failure falls back to SSH for that call
+  without discarding the marker. The safety gate is load-bearing: a candidate
+  outside the router's own ZeroTier subnets is never contacted, because
+  probing a public address would send the controller token to the internet in
+  cleartext -- the exact reason this project tunnels in the first place.
+- Verified on-device against both the production controller and the test
+  controller: explicit direct mode (read and write, including a rename with
+  spaces), and the full auto-upgrade cycle -- probe writes the marker, direct
+  takes over (~0s), a corrupted marker falls back to SSH with the marker
+  preserved, then recovers. Browser harness: badges, editor mode toggling,
+  placeholder switching, save parameter passing, plus the r43 sort
+  regression -- 12/12.
+- Semantics pinned against ZeroTier source (1.14.2 and 1.16.2 identical):
+  loopback always allowed; `allowManagementFrom` entries are CIDR/bit-mask
+  containment checks; **a bare IP is netmask 0 = allow-all** (not least
+  privilege), `/32` is an exact single host. Production now runs
+  `allowManagementFrom = ["192.168.192.32/32"]` -- only this router and
+  loopback may call the production controller. Note `systemctl restart` on
+  these hosts does not reliably swap the daemon (a 5h37m-CPU zombie kept
+  serving the old config); stop + kill + start is required.
+
 ### v2.2-r46
 
 **ztncui parity: clickable host label, member detail, IP management**

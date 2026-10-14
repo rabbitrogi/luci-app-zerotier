@@ -25,6 +25,9 @@ msgstr "地址池需要一个覆盖相同子网的路由，否则成员将获取
 msgid "A ZeroTier controller or moon root must live on a server with a fixed public IP, reachable by SSH, with passwordless sudo for that user. The controller API has no TLS and refuses every non-loopback caller, so this page never talks to it directly: it opens an SSH tunnel from this router to the remote loopback interface and sends API calls through it. The controller authtoken is read over SSH on demand and is never stored here."
 msgstr "ZeroTier 控制器或 Moon 根节点必须运行在具有固定公网 IP 的服务器上，可经 SSH 访问，且该用户具有免密 sudo 权限。控制器 API 不支持 TLS 且拒绝所有非本机回环的调用方，因此本页面从不直接访问它：而是从本路由器向远程回环接口建立 SSH 隧道，经隧道发送 API 调用。控制器令牌按需经 SSH 读取，从不存储在本机。"
 
+msgid "Access mode"
+msgstr "接入方式"
+
 msgid "Actions"
 msgstr "操作"
 
@@ -69,6 +72,12 @@ msgstr "允许管理"
 
 msgid "Allow zerotier clients access your LAN network"
 msgstr "允许 Zerotier 的拨入客户端访问路由器 LAN 资源（需要在 Zerotier 管理页面设定到 LAN 网段的路由表）"
+
+msgid "API key"
+msgstr "API 密钥"
+
+msgid "API token stored"
+msgstr "API 令牌已存储"
 
 msgid "assigning address..."
 msgstr "正在分配地址…"
@@ -211,6 +220,9 @@ msgstr "诊断"
 msgid "Diagnostics failed"
 msgstr "诊断失败"
 
+msgid "Direct"
+msgstr "直连"
+
 msgid "Distribute this file to members, then use Interface Info → Moons → Add Moon on each node. The signing secret never left the remote host."
 msgstr "将此文件分发给成员，然后在每个节点上使用「接口信息 → Moon → 添加 Moon」。签署密钥从未离开远程主机。"
 
@@ -306,6 +318,9 @@ msgstr "退出"
 
 msgid "Leave blank to keep the stored key"
 msgstr "留空则保留已存储的密钥"
+
+msgid "Leave blank to keep the stored token"
+msgstr "留空则保留已存储的令牌"
 
 msgid "Leaving moon..."
 msgstr "正在退出 moon..."
@@ -568,6 +583,9 @@ msgstr "重命名失败"
 msgid "Required: paste the PRIVATE key of a keypair whose public half is in the remote ~/.ssh/authorized_keys"
 msgstr "必填：粘贴密钥对的私钥，其公钥部分须已在远程主机的 ~/.ssh/authorized_keys 中"
 
+msgid "Required: the controller API token"
+msgstr "必填：控制器 API 令牌"
+
 msgid "Requirements: a fixed public IP · SSH access · a keypair whose public key is in the remote authorized_keys · passwordless sudo · ZeroTier built with the controller (1.14.2, or a 1.16 nonfree build)"
 msgstr "要求：固定公网 IP · SSH 访问 · 公钥已加入远程 authorized_keys 的密钥对 · 免密 sudo · 带控制器支持的 ZeroTier（1.14.2 或 1.16 nonfree 构建）"
 
@@ -646,6 +664,9 @@ msgstr "SSH 端口"
 msgid "SSH private key"
 msgstr "SSH 私钥"
 
+msgid "SSH tunnel"
+msgstr "SSH 隧道"
+
 msgid "SSH user"
 msgstr "SSH 用户"
 
@@ -666,6 +687,9 @@ msgstr "控制器从这些地址段中分配地址，并按成员逐一报告。
 
 msgid "The following will run on the remote host:"
 msgstr "以下命令将在远程主机上执行："
+
+msgid "The port the controller API listens on, e.g. 27893."
+msgstr "控制器 API 监听的端口，例如 27893。"
 
 msgid "The port the controller API listens on, e.g. 27893. Only reachable through the SSH tunnel."
 msgstr "控制器 API 监听的端口，例如 27893。仅可经 SSH 隧道访问。"
@@ -708,6 +732,9 @@ msgstr "ZeroTier"
 
 msgid "ZeroTier address"
 msgstr "ZeroTier 地址"
+
+msgid "ZeroTier direct"
+msgstr "ZeroTier 直连"
 
 msgid "ZeroTier installed"
 msgstr "ZeroTier 已安装"
