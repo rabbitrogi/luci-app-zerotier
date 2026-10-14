@@ -204,6 +204,23 @@ stderr and continues. Two consequences are handled explicitly:
 
 ## Changelog
 
+### v2.2-r48
+
+**"Detail for network" below the members table, matching ztncui**
+
+- Every network page now ends with a **Detail for network** section: all fields
+  of the controller's network object in key order -- `authTokens`,
+  `authorizationEndpoint`, `capabilities`, `clientId`, `creationTime`, `dns`,
+  `enableBroadcast`, `id`, `ipAssignmentPools`, `mtu`, `multicastLimit`,
+  `name`, `nwid`, `objtype`, `private`, `remoteTraceLevel`,
+  `remoteTraceTarget`, `revision`, `routes`, `rules`, `rulesSource`,
+  `ssoEnabled`, `tags`, `v4AssignMode`, `v6AssignMode`. It mirrors ztncui's
+  member detail, but for the network itself. Built entirely from the cached
+  `netsById` objects that `network-list` already returns, so it costs no RPC.
+- Verified in a real browser: the section is present below the members table
+  with revision, creationTime, pools, routes, rules, and v4AssignMode, plus
+  layout and sort regressions -- **10/10**.
+
 ### v2.2-r47
 
 **Two ways to reach a controller: SSH, and ZeroTier-direct**

@@ -809,6 +809,23 @@ function diagnostics(section, host) {
 			ui.showModal(_('IP assignments') + ' — ' + (m.name || m.id), body);
 		}
 
+		/* ztncui-style read-only network detail: every field of the controller's
+		 * network object in key order. netsById already holds it -- no RPC. */
+		function networkDetail(nw) {
+			if (!nw) return E('div', { 'style': 'color:orange;' }, [_('Could not read network details')]);
+			var tbl = E('tbody', {});
+			Object.keys(nw).sort().forEach(function(k) {
+				var v = nw[k];
+				tbl.appendChild(E('tr', {}, [
+					E('td', { 'style': 'padding-right:14px; font-family:monospace; white-space:nowrap; vertical-align:top;' }, [ k + ':' ]),
+					E('td', { 'style': 'font-family:monospace; word-break:break-all;' }, [
+						E('code', {}, [ (v == null) ? '' : (typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v)) ])
+					])
+				]));
+			});
+			return E('table', { 'class': 'table' }, [ tbl ]);
+		}
+
 		function memberRow(m) {
 			var mid = m.id;
 			var rmBusy = false;
@@ -1101,6 +1118,8 @@ function diagnostics(section, host) {
 		into.appendChild(E('div', { 'style': 'overflow-x:auto;' }, [
 			E('table', { 'class': 'table', 'style': 'table-layout:fixed; width:100%; min-width:1040px;' }, [ hdr, tbody ])
 		]));
+		into.appendChild(E('h4', { 'style': 'margin-top:16px;' }, [_('Detail for network')]));
+		into.appendChild(networkDetail(netsById[nwid]));
 		drawRows();
 		setStamp();
 		});
