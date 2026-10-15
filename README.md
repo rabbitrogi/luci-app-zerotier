@@ -249,6 +249,15 @@ stderr and continues. Two consequences are handled explicitly:
   16px row font). Single adaptation from the supplied SVG: the stroke
   follows `currentColor` instead of hard black so the glyph stays visible
   under the dark theme.
+- Semantics confirmed (no release bump): the trash can and the
+  authorized checkbox are DELIBERATELY different. The checkbox posts
+  `{authorized:false}` only -- name and IP assignments survive the
+  revoke/restore cycle. The trash can posts a full reset
+  (`name:'', authorized:false, ipAssignments:[]...`): the member record
+  itself is never deleted (the controller's DELETE endpoint is not used),
+  but its name and assigned IPs are wiped. Both keep the "this node once
+  joined" memory; only the trash also clears the metadata. Confirmed as
+  intended by the operator -- do not "unify" them in future audits.
 
 ### v2.2-r48
 
