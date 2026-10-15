@@ -224,6 +224,11 @@ stderr and continues. Two consequences are handled explicitly:
   `form.Flag` rows in `general.js` basic settings. They are per-client
   preferences, not controller-managed network config, so they do not belong
   in the remote controller's network editor. Nothing to add there.
+- Icon refinement (no release bump): the trash can gains a lid handle and
+  its three stripes are punched through the can body with
+  `fill-rule="evenodd"`, so the background shows through -- matching
+  ztncui's `glyphicon-trash` look. Verified in-browser (9/9) and visually
+  at 96px and 24px.
 
 ### v2.2-r48
 

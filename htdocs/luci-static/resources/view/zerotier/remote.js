@@ -853,18 +853,19 @@ function diagnostics(section, host) {
 			svg.setAttribute('height', '12');
 			svg.setAttribute('fill', 'currentColor');
 			svg.setAttribute('aria-hidden', 'true');
-			var parts = [
-				'M2 2h12v1H2z',
-				'M3 4h10l-.8 10.2A2 2 0 0 1 10.2 16H5.8A2 2 0 0 1 3.8 14.2L3 4z',
-				'M6 6h1v7H6z',
-				'M8.5 6h1v7h-1z',
-				'M11 6h1v7h-1z'
-			];
-			parts.forEach(function(d) {
+			[ 'M6.2 0h3.6v2h-3.6z', 'M2.5 2h11v1.4h-11z' ].forEach(function(d) {
 				var p = document.createElementNS(ns, 'path');
 				p.setAttribute('d', d);
 				svg.appendChild(p);
 			});
+			var body = document.createElementNS(ns, 'path');
+			body.setAttribute('d',
+				'M3.2 4h9.6l-.75 10.2a2 2 0 0 1-2 1.8H5.95a2 2 0 0 1-2-1.8z' +
+				'M5.35 5.6h1.1v7.6h-1.1z' +
+				'M7.45 5.6h1.1v7.6h-1.1z' +
+				'M9.55 5.6h1.1v7.6h-1.1z');
+			body.setAttribute('fill-rule', 'evenodd');
+			svg.appendChild(body);
 			return svg;
 		}
 
