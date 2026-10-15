@@ -757,11 +757,23 @@ case "$1" in
 
 				json_init
 
-				case "$_sect" in
-					''|*[!A-Za-z0-9_]*) _err="invalid section name" ;;
-					*) _err="" ;;
-				esac
-				[ -z "$_err" ] || { json_add_int "code" 1; json_add_string "error" "$_err"; json_dump; return; }
+			case "$_sect" in
+				''|*[!A-Za-z0-9_]*) _err="invalid section name" ;;
+				*) _err="" ;;
+			esac
+			[ -z "$_err" ] || { json_add_int "code" 1; json_add_string "error" "$_err"; json_dump; return; }
+
+			# A label is free text, but UCI values cannot hold line breaks:
+			# one would corrupt /etc/config/zerotier on commit. The byte-count
+			# comparison, not grep, is load-bearing: grep can never see \n
+			# because it is grep's own line delimiter. CJK and other UTF-8
+			# labels pass untouched.
+			if [ "$(printf '%s' "$_hname" | wc -c)" -ne "$(printf '%s' "$_hname" | tr -d '\r\n\t' | wc -c)" ]; then
+				json_add_int "code" 1
+				json_add_string "error" "label must not contain line breaks or control characters"
+				json_dump
+				return
+			fi
 
 				case "$_rhost" in
 					''|*[!A-Za-z0-9.:_-]*) _err="host must be a hostname or IP literal" ;;

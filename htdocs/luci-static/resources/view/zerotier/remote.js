@@ -834,38 +834,60 @@ function diagnostics(section, host) {
 				'style': 'cursor:pointer; text-decoration:none;',
 				'click': function(ev) {
 					ev.preventDefault();
-					if (rmBusy) return;
-					if (!confirm(_('Remove member ') + mid + ' from this network?')) return;
-					rmBusy = true;
-					L.resolveDefault(rpcMemberSet(section, nwid, mid, JSON.stringify({
-						name: '', authorized: false, activeBridge: false, ipAssignments: [], noAutoAssignIps: false
-					})), {}).then(function() { loadMembers(nwid, into); });
+				if (rmBusy) return;
+				if (!confirm(_('Remove member ') + mid + ' from this network?')) return;
+				rmBusy = true;
+				L.resolveDefault(rpcMemberSet(section, nwid, mid, JSON.stringify({
+					name: '', authorized: false, activeBridge: false, ipAssignments: [], noAutoAssignIps: false
+				})), {}).then(function(r2) {
+					if (r2 && r2.code === 0) { loadMembers(nwid, into); return; }
+					/* Failure leaves the member in place; without a notice the
+					 * reload-less silence reads as "it worked". */
+					rmBusy = false;
+					ui.addNotification(null, E('span', { 'class': 'alert-message warning' }, [ errText(r2, _('Remove failed')) ]), 'warning');
+				});
 				}
 			}, [ trashIcon() ]);
 
-		/* ztncui uses glyphicon-trash; this LuCI theme has no Bootstrap
-		 * Glyphicons, so the can is drawn inline instead of loading a font. */
+	/* Stroke geometry hand-tuned by the operator (viewBox 100x110, 4.5-unit
+	 * round strokes). Single adaptation: the stroke follows currentColor
+	 * instead of the original hard black, so the glyph stays visible under
+	 * the dark theme. */
 		function trashIcon() {
 			var ns = 'http://www.w3.org/2000/svg';
 			var svg = document.createElementNS(ns, 'svg');
-			svg.setAttribute('viewBox', '0 0 16 16');
-			svg.setAttribute('width', '1em');
-			svg.setAttribute('height', '1em');
-			svg.setAttribute('fill', 'currentColor');
+			svg.setAttribute('viewBox', '0 0 100 110');
+			svg.setAttribute('width', '1.25em');
+			svg.setAttribute('height', '1.25em');
 			svg.setAttribute('aria-hidden', 'true');
-			[ 'M6.2 0h3.6v2h-3.6z', 'M2.5 2h11v1.4h-11z' ].forEach(function(d) {
-				var p = document.createElementNS(ns, 'path');
-				p.setAttribute('d', d);
-				svg.appendChild(p);
-			});
+			var g = document.createElementNS(ns, 'g');
+			g.setAttribute('fill', 'none');
+			g.setAttribute('stroke', 'currentColor');
+			g.setAttribute('stroke-width', '4.5');
+			g.setAttribute('stroke-linecap', 'round');
+			g.setAttribute('stroke-linejoin', 'round');
+			var handle = document.createElementNS(ns, 'path');
+			handle.setAttribute('d', 'M 35.5 15 L 35.5 9 A 4 4 0 0 1 39.5 5 L 60.5 5 A 4 4 0 0 1 64.5 9 L 64.5 15');
+			var lid = document.createElementNS(ns, 'rect');
+			lid.setAttribute('x', '10');
+			lid.setAttribute('y', '15');
+			lid.setAttribute('width', '80');
+			lid.setAttribute('height', '12');
+			lid.setAttribute('rx', '6');
 			var body = document.createElementNS(ns, 'path');
-			body.setAttribute('d',
-				'M3.2 4h9.6l-.75 10.2a2 2 0 0 1-2 1.8H5.95a2 2 0 0 1-2-1.8z' +
-				'M5.35 5.6h1.1v7.6h-1.1z' +
-				'M7.45 5.6h1.1v7.6h-1.1z' +
-				'M9.55 5.6h1.1v7.6h-1.1z');
-			body.setAttribute('fill-rule', 'evenodd');
-			svg.appendChild(body);
+			body.setAttribute('d', 'M 17 27 L 20 90 A 9 9 0 0 0 29 99 L 71 99 A 9 9 0 0 0 80 90 L 83 27');
+			g.appendChild(handle);
+			g.appendChild(lid);
+			g.appendChild(body);
+			[ 34, 50, 66 ].forEach(function(x) {
+				var l = document.createElementNS(ns, 'line');
+				l.setAttribute('x1', String(x));
+				l.setAttribute('y1', '42');
+				l.setAttribute('x2', String(x));
+				l.setAttribute('y2', '82');
+				g.appendChild(l);
+			});
+			svg.appendChild(g);
 			return svg;
 		}
 

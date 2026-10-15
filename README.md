@@ -237,6 +237,18 @@ stderr and continues. Two consequences are handled explicitly:
   like ztncui's glyphicons. The scroll min-width grows to 1400px for the
   larger font; collision-free at the 1400px boundary (11/11 in-browser,
   screenshots at 820/1400/1700px).
+- Audit fixes (no release bump): the member remove button now reports
+  failures with a notification instead of silently reloading; the remote
+  host label is validated (line breaks/control characters rejected --
+  UCI values cannot hold them, and the byte-count comparison is used
+  because grep can never see `\n`, its own line delimiter); CJK labels
+  pass untouched. Verified end to end on-device via ubus.
+- Icon redesign (no release bump): the trash can is now the operator's
+  hand-tuned stroke geometry (viewBox 100x110, 4.5-unit round strokes,
+  open body, three inner lines) rendered at 1.25em (20px at the current
+  16px row font). Single adaptation from the supplied SVG: the stroke
+  follows `currentColor` instead of hard black so the glyph stays visible
+  under the dark theme.
 
 ### v2.2-r48
 
