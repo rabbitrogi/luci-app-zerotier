@@ -849,8 +849,8 @@ function diagnostics(section, host) {
 			var ns = 'http://www.w3.org/2000/svg';
 			var svg = document.createElementNS(ns, 'svg');
 			svg.setAttribute('viewBox', '0 0 16 16');
-			svg.setAttribute('width', '12');
-			svg.setAttribute('height', '12');
+			svg.setAttribute('width', '1em');
+			svg.setAttribute('height', '1em');
 			svg.setAttribute('fill', 'currentColor');
 			svg.setAttribute('aria-hidden', 'true');
 			[ 'M6.2 0h3.6v2h-3.6z', 'M2.5 2h11v1.4h-11z' ].forEach(function(d) {
@@ -869,7 +869,7 @@ function diagnostics(section, host) {
 			return svg;
 		}
 
-			var nameI = E('input', { 'type': 'text', 'value': m.name || '', 'style': 'width:100%; box-sizing:border-box;' });
+			var nameI = E('input', { 'type': 'text', 'value': m.name || '', 'style': 'width:100%; box-sizing:border-box; font-size:inherit;' });
 			var nameBusy = false, nameAfterKey = false;
 			function commitName() {
 				var v = nameI.value;
@@ -1134,15 +1134,21 @@ function diagnostics(section, host) {
 		paintSortInd();
 		into.appendChild(E('div', { 'style': 'display:flex; gap:8px; align-items:center; margin:6px 0;' },
 			[ filterI, counterHost, refreshBtn, stamp ]));
-		/* The scroll wrapper and min-width are load-bearing: table-layout:fixed
-		 * pins column widths but does NOT clip or wrap content, so a nowrap cell
-		 * wider than its share prints over the next column. Screenshotting the
-		 * page at 820px showed "192.168.192.x" on top of "OFFLINE" down the whole
-		 * table. 1040px is where the widest nowrap cell (the peer endpoint, 26%
-		 * column) stops overflowing; below it the table scrolls instead of
-		 * colliding, and above it the min-width is inert. */
-		into.appendChild(E('div', { 'style': 'overflow-x:auto;' }, [
-			E('table', { 'class': 'table', 'style': 'table-layout:fixed; width:100%; min-width:1040px;' }, [ hdr, tbody ])
+		/* Row sizing borrows the theme's own scale instead of a hardcoded px:
+		 * argon shrinks every table/.table to 0.75rem, so the table is wrapped
+		 * in an h5 (zeroed margins/padding, size untouched) and references it
+		 * with font-size:1em -- whatever the theme's h5 size is, the rows
+		 * follow. The scroll wrapper and min-width are load-bearing:
+		 * table-layout:fixed pins column widths but does NOT clip or wrap
+		 * content, so a nowrap cell wider than its share prints over the next
+		 * column ("192.168.192.x" over "OFFLINE" at 820px). At heading size
+		 * (16px root) the widest nowrap cell (peer endpoint, 26% column) needs
+		 * 1400px of table width to stay inside its share; below it the table
+		 * scrolls instead of colliding, above it the min-width is inert. */
+		into.appendChild(E('h5', { 'style': 'margin:0; padding:0;' }, [
+			E('div', { 'style': 'overflow-x:auto;' }, [
+				E('table', { 'class': 'table', 'style': 'table-layout:fixed; width:100%; min-width:1400px; font-size:1em;' }, [ hdr, tbody ])
+			])
 		]));
 		into.appendChild(E('h4', { 'style': 'margin-top:16px;' }, [_('Detail for network')]));
 		into.appendChild(networkDetail(netsById[nwid]));

@@ -229,6 +229,14 @@ stderr and continues. Two consequences are handled explicitly:
   `fill-rule="evenodd"`, so the background shows through -- matching
   ztncui's `glyphicon-trash` look. Verified in-browser (9/9) and visually
   at 96px and 24px.
+- Row sizing (no release bump): the member list now renders at the theme's
+  heading scale instead of argon's shrunken table size (0.75rem). The
+  table is wrapped in an `h5` and references it with `font-size:1em`, so
+  no pixel size is hardcoded -- if the theme changes its h5, the rows
+  follow. The trash-can icon scales the same way (`width/height:1em`),
+  like ztncui's glyphicons. The scroll min-width grows to 1400px for the
+  larger font; collision-free at the 1400px boundary (11/11 in-browser,
+  screenshots at 820/1400/1700px).
 
 ### v2.2-r48
 
