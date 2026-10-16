@@ -1,5 +1,7 @@
 # luci-app-zerotier (JavaScript Edition)
 
+**English** | [简体中文](README_zh-CN.md)
+
 A modern LuCI interface for ZeroTier VPN on OpenWrt, converted from the original Lua version and continuously improved.
 
 Forked from https://github.com/zhengmz/luci-app-zerotier, initially converted to JavaScript using AUGMENT Code plugin in VS Code, then further refined and bug-fixed using [OpenCode](https://opencode.ai) + GLM-5.1.
