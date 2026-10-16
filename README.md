@@ -251,6 +251,13 @@ stderr and continues. Two consequences are handled explicitly:
   16px row font). Single adaptation from the supplied SVG: the stroke
   follows `currentColor` instead of hard black so the glyph stays visible
   under the dark theme.
+- Host list polish (no release bump): each configured host's clickable
+  name now renders at the page-title scale -- it is a real h2 (argon:
+  1.25rem, same as the "ZeroTier - Remote Controller" heading) with only
+  the card chrome (padding/white background/shadow) neutralised inline,
+  so typography stays the theme's. The monospace connection line below
+  is unchanged, and host blocks gain margin-bottom so consecutive hosts
+  no longer touch.
 - Semantics confirmed (no release bump): the trash can and the
   authorized checkbox are DELIBERATELY different. The checkbox posts
   `{authorized:false}` only -- name and IP assignments survive the

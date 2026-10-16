@@ -1355,11 +1355,16 @@ return view.extend({
 						L.resolveDefault(rpcHostDel(h.section), {}).then(function() { reload(); });
 					});
 
-					listBox.appendChild(E('div', { 'class': 'cbi-section' }, [
+				/* The name borrows the page-title scale: argon styles h2 at
+				 * 1.25rem, which is exactly the "ZeroTier - Remote Controller"
+				 * heading. Only the h2's card chrome (padding/white
+				 * background/shadow) is neutralised -- typography stays the
+				 * theme's, so a theme resize moves both together. */
+					listBox.appendChild(E('div', { 'class': 'cbi-section', 'style': 'margin-bottom:1rem;' }, [
 						E('div', { 'style': 'display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;' }, [
 						E('div', {}, [
-							E('a', { 'href': '#', 'style': 'color:inherit; cursor:pointer; text-decoration:none;', 'title': _('Manage'), 'click': function(ev) { ev.preventDefault(); toggleDetail(); } }, [
-								E('strong', {}, [ h.name ])
+							E('h2', { 'style': 'margin:0; padding:0; background:none; box-shadow:none;' }, [
+								E('a', { 'href': '#', 'style': 'color:inherit; cursor:pointer; text-decoration:none;', 'title': _('Manage'), 'click': function(ev) { ev.preventDefault(); toggleDetail(); } }, [ h.name ])
 							]),
 								E('div', { 'style': 'font-family:monospace; font-size:12px; color:#666;' }, [
 									(h.mode === 'direct' || h.direct)
