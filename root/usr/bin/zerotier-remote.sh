@@ -139,7 +139,9 @@ r_load() {
 
 	r_name=$(rget "$r_sect" name "$r_sect")
 	r_host=$(rget "$r_sect" host)
-	r_cport=$(rget "$r_sect" controller_port 9993)
+	# Empty means "not configured": SSH mode then discovers the real port from
+	# the remote daemon (see the block after r_dest) and commits it here.
+	r_cport=$(rget "$r_sect" controller_port "")
 	r_mode=$(rget "$r_sect" mode ssh)
 	r_tokfile=$(rget "$r_sect" token_path "/etc/zerotier/remote/$r_sect.token")
 	r_mark="/etc/zerotier/remote/$r_sect.direct"
@@ -150,9 +152,11 @@ r_load() {
 		*) r_die "unknown access mode '$r_mode'" ;;
 	esac
 	r_valid_host "$r_host" || r_die "invalid or empty host"
-	r_valid_port "$r_cport" || r_die "invalid controller_port"
 
 	if [ "$r_mode" = "direct" ]; then
+		# ZT direct has no SSH to discover anything with, so the port is the
+		# one thing the operator must still supply.
+		r_valid_port "$r_cport" || r_die "invalid controller_port"
 		# ZT direct: no ssh at all -- the controller is reached over the
 		# ZeroTier network with its API token, kept with the same 0600
 		# discipline as the ssh key.
@@ -183,11 +187,25 @@ r_load() {
 	r_lport=$(( 20000 + ((0x$_u + $$) % 19000) ))
 	r_valid_port "$r_lport" || r_die "could not derive a local forwarding port"
 
-	# Without an explicit key, ssh would fall back to an agent and then to
-	# password prompts, which would hang the rpcd call instead of failing it.
-	[ -f "$r_key" ] || r_die "ssh key not found at $r_key"
-
 	r_dest="$r_user@$r_host"
+
+	# Controller port discovery, SSH mode with nothing stored: the daemon
+	# writes its real bound port to zerotier-one.port and the controller API
+	# shares that port. Costs ONE extra SSH round trip the first time only --
+	# the finding is committed to UCI, and every later call reads it like a
+	# typed value. A controller_port already in UCI always wins and is never
+	# probed; a failed discovery falls back to the daemon default for this
+	# call and stays unset, so a later call can retry.
+	if [ "$r_mode" = "ssh" ] && ! r_valid_port "$r_cport"; then
+		_dp=$(rssh "sudo -n cat /var/lib/zerotier-one/zerotier-one.port" 2>/dev/null | tr -dc '0-9')
+		if r_valid_port "$_dp"; then
+			r_cport="$_dp"
+			uci set "$ZT_UCI_CONFIG.$r_sect.controller_port=$_dp"
+			uci commit "$ZT_UCI_CONFIG" 2>/dev/null
+		else
+			r_cport=9993
+		fi
+	fi
 }
 
 # --- ssh -------------------------------------------------------------------

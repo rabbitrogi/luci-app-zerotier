@@ -319,9 +319,6 @@ msgstr "延迟"
 msgid "Leave"
 msgstr "退出"
 
-msgid "Leave blank to keep the stored key"
-msgstr "留空则保留已存储的密钥"
-
 msgid "Leave blank to keep the stored token"
 msgstr "留空则保留已存储的令牌"
 
@@ -583,9 +580,6 @@ msgstr "重命名"
 msgid "Rename failed"
 msgstr "重命名失败"
 
-msgid "Required: paste the PRIVATE key of a keypair whose public half is in the remote ~/.ssh/authorized_keys"
-msgstr "必填：粘贴密钥对的私钥，其公钥部分须已在远程主机的 ~/.ssh/authorized_keys 中"
-
 msgid "Required: the controller API token"
 msgstr "必填：控制器 API 令牌"
 
@@ -664,9 +658,6 @@ msgstr "SSH 密钥已安装"
 msgid "SSH port"
 msgstr "SSH 端口"
 
-msgid "SSH private key"
-msgstr "SSH 私钥"
-
 msgid "SSH tunnel"
 msgstr "SSH 隧道"
 
@@ -690,9 +681,6 @@ msgstr "控制器从这些地址段中分配地址，并按成员逐一报告。
 
 msgid "The following will run on the remote host:"
 msgstr "以下命令将在远程主机上执行："
-
-msgid "The port the controller API listens on, e.g. 27893."
-msgstr "控制器 API 监听的端口，例如 27893。"
 
 msgid "The port the controller API listens on, e.g. 27893. Only reachable through the SSH tunnel."
 msgstr "控制器 API 监听的端口，例如 27893。仅可经 SSH 隧道访问。"
@@ -747,4 +735,34 @@ msgstr "Zerotier 是一个开源，跨平台，而且适合内网穿透互联的
 
 msgid "ZeroTier version"
 msgstr "ZeroTier 版本"
+
+msgid "SSH public key"
+msgstr "SSH 公钥"
+
+msgid "The public half of this router's dedicated key pair. Add it to the remote host's ~/.ssh/authorized_keys to authorize this router."
+msgstr "本路由器专用密钥对的公钥半边。把它添加到远程主机的 ~/.ssh/authorized_keys 即可授权本路由器。"
+
+msgid "No private key needed: when you save, this router generates a dedicated key pair and shows you the public key and the exact command to run on the remote host."
+msgstr "无需私钥：保存时本路由器会生成专用密钥对，并显示公钥与需要在远程主机上执行的确切命令。"
+
+msgid "Direct mode only. Over SSH the port is discovered from the remote daemon and remembered, so it never has to be typed."
+msgstr "仅直连模式需要。SSH 模式下端口会从远程守护进程自动发现并记住，无需填写。"
+
+msgid "Copy command"
+msgstr "复制命令"
+
+msgid "Copied. Run it on the remote host."
+msgstr "已复制。请在远程主机上执行。"
+
+msgid "Done"
+msgstr "完成"
+
+msgid "Authorize this router on the remote host"
+msgstr "在远程主机上授权本路由器"
+
+msgid "A dedicated key pair was generated on this router for host "%s". The private half never leaves this router. You already have access to the remote host, so run this command there to authorize the connection:"
+msgstr "本路由器已为主机“%s”生成专用密钥对。私钥半边永远不会离开本路由器。你本来就拥有远程主机的访问权，在那里执行以下命令即可授权连接："
+
+msgid " (controller port auto-discovered)"
+msgstr "（控制器端口将自动发现）"
 

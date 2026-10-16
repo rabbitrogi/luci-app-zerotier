@@ -715,11 +715,25 @@ case "$1" in
 					json_add_string "host" "$_h"
 					json_add_string "port" "$(uci -q get "zerotier.$_s.port" || echo 22)"
 					json_add_string "user" "$(uci -q get "zerotier.$_s.user" || echo root)"
-				json_add_string "controller_port" "$(uci -q get "zerotier.$_s.controller_port" || echo 9993)"
+				# No fake default: an unset controller_port reports empty and the
+				# view says it will be auto-discovered (it is, on first use).
+				json_add_string "controller_port" "$(uci -q get "zerotier.$_s.controller_port")"
 				json_add_string "mode" "$(uci -q get "zerotier.$_s.mode" || echo ssh)"
 				json_add_string "key_path" "$_kp"
 				if [ -f "$_kp" ]; then
 					json_add_boolean "key_present" 1
+					# Public half only: a public key is not secret, and the
+					# editor shows it so the operator can (re)authorize the
+					# router on the remote host.
+					_pb=""
+					if [ -f "$_kp.pub" ]; then
+						_pb=$(cat "$_kp.pub" 2>/dev/null)
+					else
+						# grep is load-bearing: dropbear's ssh-keygen prints a
+						# "Public key portion is:" header and a Fingerprint line too.
+						_pb=$(ssh-keygen -y -f "$_kp" 2>/dev/null | grep -m1 "^ssh-")
+					fi
+					[ -n "$_pb" ] && json_add_string "pubkey" "$_pb"
 				else
 					json_add_boolean "key_present" 0
 				fi
@@ -793,13 +807,21 @@ case "$1" in
 					*) _err="invalid ssh user" ;;
 				esac
 				[ -z "$_err" ] || { json_add_int "code" 1; json_add_string "error" "$_err"; json_dump; return; }
-				for _p in "$_rport" "$_cport"; do
-					case "$_p" in
-						''|*[!0-9]*) _err="ports must be numeric" ;;
-						*) [ "$_p" -ge 1 ] 2>/dev/null && [ "$_p" -le 65535 ] 2>/dev/null || _err="port out of range" ;;
+				case "$_rport" in
+					''|*[!0-9]*) _err="ports must be numeric" ;;
+					*) [ "$_rport" -ge 1 ] 2>/dev/null && [ "$_rport" -le 65535 ] 2>/dev/null || _err="port out of range" ;;
+				esac
+				[ -z "$_err" ] || { json_add_int "code" 1; json_add_string "error" "$_err"; json_dump; return; }
+				# SSH port is required; the controller port is OPTIONAL here --
+				# empty means the helper discovers it from the remote daemon
+				# and remembers it. Validate only when supplied.
+				if [ -n "$_cport" ]; then
+					case "$_cport" in
+						*[!0-9]*) _err="controller port must be numeric" ;;
+						*) [ "$_cport" -ge 1 ] 2>/dev/null && [ "$_cport" -le 65535 ] 2>/dev/null || _err="port out of range" ;;
 					esac
 					[ -z "$_err" ] || { json_add_int "code" 1; json_add_string "error" "$_err"; json_dump; return; }
-				done
+				fi
 			else
 				case "$_cport" in
 					''|*[!0-9]*) _err="controller port must be numeric" ;;
@@ -819,44 +841,80 @@ case "$1" in
 				fi
 			fi
 
-			_rport=${_rport:-22}
-			_ruser=${_ruser:-root}
-			_cport=${_cport:-9993}
-			_hname=${_hname:-$_sect}
-			_kp="/etc/zerotier/remote/$_sect.key"
+		_rport=${_rport:-22}
+		_ruser=${_ruser:-root}
+		_hname=${_hname:-$_sect}
+		_kp="/etc/zerotier/remote/$_sect.key"
 
 				mkdir -p /etc/zerotier/remote || { json_add_int "code" 1; json_add_string "error" "cannot create /etc/zerotier/remote"; json_dump; return; }
 				chmod 700 /etc/zerotier/remote 2>/dev/null
 
-				# An existing key is preserved when the field is left blank, so
-				# editing a host's name does not silently destroy its key.
-				if [ -n "$_pkey" ]; then
-					case "$_pkey" in
-						*"PRIVATE KEY"*) ;;
-						*) json_add_int "code" 1; json_add_string "error" "that does not look like a private key"; json_dump; return ;;
-					esac
-					(umask 077; printf '%s\n' "$_pkey" > "$_kp") || { json_add_int "code" 1; json_add_string "error" "could not write the key file"; json_dump; return; }
-					chmod 600 "$_kp" 2>/dev/null
+			# An existing key is preserved when the field is left blank, so
+			# editing a host's name does not silently destroy its key.
+			if [ -n "$_pkey" ]; then
+				case "$_pkey" in
+					*"PRIVATE KEY"*) ;;
+					*) json_add_int "code" 1; json_add_string "error" "that does not look like a private key"; json_dump; return ;;
+				esac
+				(umask 077; printf '%s\n' "$_pkey" > "$_kp") || { json_add_int "code" 1; json_add_string "error" "could not write the key file"; json_dump; return; }
+				chmod 600 "$_kp" 2>/dev/null
+			fi
+
+			# No key pasted and none stored: generate a dedicated keypair on
+			# the router. The private half is written straight to its 0600
+			# file and never crosses the browser; the public half travels
+			# back in the response so the UI can show the operator the exact
+			# command to authorize it on the remote host (which they can run
+			# there because they already have their own access).
+			_keygen=0
+			if [ "$_mode" = "ssh" ] && [ -z "$_pkey" ] && [ ! -f "$_kp" ]; then
+				if (umask 077 && ssh-keygen -t ed25519 -N '' -C "luci-zerotier-$_sect" -f "$_kp" -q >/dev/null 2>&1); then
+					_keygen=1
+				else
+					rm -f "$_kp" "$_kp.pub" 2>/dev/null
+					json_add_int "code" 1
+					json_add_string "error" "could not generate a key pair (ssh-keygen failed)"
+					json_dump
+					return
 				fi
+			fi
 
 				uci -q delete "zerotier.$_sect" 2>/dev/null
 				uci set "zerotier.$_sect=remote"
 				uci set "zerotier.$_sect.name=$_hname"
 				uci set "zerotier.$_sect.host=$_rhost"
-				uci set "zerotier.$_sect.port=$_rport"
-				uci set "zerotier.$_sect.user=$_ruser"
-				uci set "zerotier.$_sect.controller_port=$_cport"
-				uci set "zerotier.$_sect.key_path=$_kp"
+			uci set "zerotier.$_sect.port=$_rport"
+			uci set "zerotier.$_sect.user=$_ruser"
+			# Direct mode needs the port on file (default 9993); SSH mode with
+			# an empty value deletes any stale setting so the helper's
+			# discover-and-remember path runs again.
+			if [ "$_mode" = "direct" ] || [ -n "$_cport" ]; then
+				uci set "zerotier.$_sect.controller_port=$( [ "$_mode" = "direct" ] && echo "${_cport:-9993}" || echo "$_cport" )"
+			else
+				uci -q delete "zerotier.$_sect.controller_port"
+			fi
+			uci set "zerotier.$_sect.key_path=$_kp"
 			uci set "zerotier.$_sect.mode=$_mode"
 			# A config change invalidates any cached transport decision: the old
 			# direct marker or probe-failure note belongs to the old settings.
 			rm -f "/etc/zerotier/remote/$_sect.direct" "/etc/zerotier/remote/$_sect.nodirect" 2>/dev/null
 				uci commit zerotier || { json_add_int "code" 1; json_add_string "error" "uci commit failed"; json_dump; return; }
 
-				json_add_int "code" 0
-				json_add_string "key_path" "$_kp"
-				json_dump
-				;;
+			json_add_int "code" 0
+			json_add_string "key_path" "$_kp"
+			# The public half rides along whenever it is known, so the editor
+			# can display it for an existing key and the save flow can show
+			# the authorize-on-remote command for a freshly generated one.
+			_pub=""
+			if [ -f "$_kp.pub" ]; then
+				_pub=$(cat "$_kp.pub" 2>/dev/null)
+			elif [ -f "$_kp" ]; then
+				_pub=$(ssh-keygen -y -f "$_kp" 2>/dev/null | grep -m1 "^ssh-")
+			fi
+			[ -n "$_pub" ] && json_add_string "pubkey" "$_pub"
+			[ "$_keygen" = "1" ] && json_add_boolean "key_generated" 1
+			json_dump
+			;;
 			remote_host_del)
 				read -r input
 				json_load "$input" 2>/dev/null
@@ -871,7 +929,11 @@ case "$1" in
 				[ -n "$_kp" ] || _kp="/etc/zerotier/remote/$_sect.key"
 				# Only unlink inside our own managed directory.
 			case "$_kp" in
-				/etc/zerotier/remote/*.key) [ -f "$_kp" ] && rm -f "$_kp" ;;
+				/etc/zerotier/remote/*.key)
+					[ -f "$_kp" ] && rm -f "$_kp"
+					# *.key does not match <key>.pub; drop it too or it leaks.
+					rm -f "$_kp.pub" 2>/dev/null
+					;;
 			esac
 			rm -f "/etc/zerotier/remote/$_sect.token" "/etc/zerotier/remote/$_sect.direct" "/etc/zerotier/remote/$_sect.nodirect" 2>/dev/null
 				uci -q delete "zerotier.$_sect"

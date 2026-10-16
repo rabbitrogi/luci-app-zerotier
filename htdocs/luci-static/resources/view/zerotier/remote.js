@@ -59,6 +59,50 @@ function yn(v, t, f) {
 
 /* ------------------------------------------------------------------ hosts */
 
+/* LuCI on the LAN is plain http, where the async clipboard API is withheld
+ * (secure-context only): fall back to select + execCommand. The API path
+ * also degrades to the fallback when the browser denies the permission. */
+function copyText(t) {
+	if (navigator.clipboard && window.isSecureContext) {
+		navigator.clipboard.writeText(t).catch(function() { copyTextFallback(t); });
+		return;
+	}
+	copyTextFallback(t);
+}
+function copyTextFallback(t) {
+	var ta = E('textarea', { 'style': 'position:fixed; top:-100px; left:-100px;' });
+	ta.value = t;
+	document.body.appendChild(ta);
+	ta.select();
+	try { document.execCommand('copy'); } catch (e) {}
+	document.body.removeChild(ta);
+}
+
+/* Shown after a save that generated a fresh key pair: the private half never
+ * crossed the browser, and the operator adds the public half to the remote's
+ * authorized_keys -- which they can do because they already have their own
+ * access to that host. */
+function pubkeyModal(pub, name) {
+	var cmd = "echo '" + pub.replace(/\s+$/, '') + "' >> ~/.ssh/authorized_keys";
+	var cmdI = E('input', { 'type': 'text', 'readonly': 'readonly', 'value': cmd,
+		'style': 'width:100%; box-sizing:border-box; font-family:monospace; font-size:12px; padding:6px;' });
+	var msg = E('div', { 'style': 'color:green; min-height:18px; margin-top:4px;' });
+	var copyBtn = E('button', { 'class': 'cbi-button cbi-button-action' }, [ _('Copy command') ]);
+	copyBtn.addEventListener('click', function() {
+		copyText(cmd);
+		msg.textContent = _('Copied. Run it on the remote host.');
+	});
+	var doneBtn = E('button', { 'class': 'cbi-button', 'click': function() { ui.hideModal(); } }, [ _('Done') ]);
+	ui.showModal(_('Authorize this router on the remote host'), E('div', { 'style': 'max-width:560px;' }, [
+		E('p', {}, [ _('A dedicated key pair was generated on this router for host "%s". The private half never leaves this router. You already have access to the remote host, so run this command there to authorize the connection:').replace('%s', name) ]),
+		cmdI,
+		msg,
+		E('div', { 'style': 'margin-top:10px; display:flex; gap:8px; justify-content:flex-end;' }, [ copyBtn, doneBtn ])
+	]));
+	cmdI.focus();
+	cmdI.select();
+}
+
 function hostEditor(section, host, onSaved) {
 	var isNew = !section;
 	var f = section || '';
@@ -72,13 +116,11 @@ function hostEditor(section, host, onSaved) {
 	modeSel.value = (host && host.mode) || 'ssh';
 	var portI = E('input', { 'type': 'number', 'id': 'zt_r_port', 'value': (host && host.port) || '22', 'min': '1', 'max': '65535' });
 	var userI = E('input', { 'type': 'text', 'id': 'zt_r_user', 'value': (host && host.user) || 'root' });
-	var cportI = E('input', { 'type': 'number', 'id': 'zt_r_cport', 'value': (host && host.controller_port) || '27893', 'min': '1', 'max': '65535' });
-	var keyI = E('textarea', {
-		'id': 'zt_r_key', 'rows': '6', 'style': 'width:100%; font-family:monospace; font-size:12px;',
-		'placeholder': isNew
-			? _('Required: paste the PRIVATE key of a keypair whose public half is in the remote ~/.ssh/authorized_keys')
-			: _('Leave blank to keep the stored key')
-	});
+	var cportI = E('input', { 'type': 'number', 'id': 'zt_r_cport', 'value': (host && host.controller_port) || '9993', 'min': '1', 'max': '65535' });
+	var pubI = (host && host.pubkey)
+		? E('input', { 'type': 'text', 'readonly': 'readonly', 'value': host.pubkey,
+			'style': 'width:100%; box-sizing:border-box; font-family:monospace; font-size:12px;' })
+		: null;
 	var apiI = E('input', {
 		'type': 'password', 'style': 'width:100%; font-family:monospace;',
 		'placeholder': isNew
@@ -95,15 +137,20 @@ function hostEditor(section, host, onSaved) {
 		saveBtn.disabled = true;
 		var sectName = f || ('zt' + Date.now().toString(36));
 		var m = modeSel.value;
+		/* private_key is always '' now: a dedicated key pair is generated on
+		 * the router when the first SSH-mode save finds none stored. The
+		 * field survives in the RPC contract for API callers only. */
 		L.resolveDefault(rpcHostSet(
 			sectName, nameI.value, hostI.value, portI.value,
-			userI.value, cportI.value,
-			(m === 'ssh') ? keyI.value : '',
+			userI.value, (m === 'direct') ? cportI.value : '',
+			'',
 			m, (m === 'direct') ? apiI.value : ''), {})
 		.then(function(res) {
 			if (res && res.code === 0) {
 				hostEditor.close();
 				onSaved();
+				if (m === 'ssh' && res.key_generated && res.pubkey)
+					pubkeyModal(res.pubkey, nameI.value || sectName);
 			} else {
 				msg.textContent = errText(res, _('Could not save the host'));
 				saveBtn.disabled = false;
@@ -117,7 +164,22 @@ function hostEditor(section, host, onSaved) {
 		var modeRow = E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('Access mode')]), E('div', {}, [ modeSel ]) ]);
 		var portRow = E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('SSH port')]), E('div', {}, [ portI ]) ]);
 		var userRow = E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('SSH user')]), E('div', {}, [ userI ]) ]);
-		var keyRow = E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('SSH private key')]), E('div', {}, [ keyI ]) ]);
+		var keyRow = E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('SSH public key')]), E('div', {}, pubI ? [
+			pubI,
+			E('div', { 'class': 'cbi-value-description' }, [
+				_("The public half of this router's dedicated key pair. Add it to the remote host's ~/.ssh/authorized_keys to authorize this router.")
+			])
+		] : [
+			E('div', { 'class': 'cbi-value-description' }, [
+				_('No private key needed: when you save, this router generates a dedicated key pair and shows you the public key and the exact command to run on the remote host.')
+			])
+		]) ]);
+		var cportRow = E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('Controller port')]), E('div', {}, [
+			cportI,
+			E('div', { 'class': 'cbi-value-description' }, [
+				_('Direct mode only. Over SSH the port is discovered from the remote daemon and remembered, so it never has to be typed.')
+			])
+		]) ]);
 		var apiRow = E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('API key')]), E('div', {}, [ apiI ]) ]);
 
 		hostEditor.body = E('div', { 'class': 'cbi-section' }, [
@@ -127,7 +189,7 @@ function hostEditor(section, host, onSaved) {
 			E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('Public IP or host')]), E('div', {}, [ hostI ]) ]),
 			portRow,
 			userRow,
-			E('div', { 'class': 'cbi-value' }, [ E('label', {}, [_('Controller port')]), E('div', {}, [ cportI, E('div', { 'class': 'cbi-value-description' }, [_('The port the controller API listens on, e.g. 27893.')]) ]) ]),
+			cportRow,
 			keyRow,
 			apiRow,
 			msg,
@@ -137,6 +199,7 @@ function hostEditor(section, host, onSaved) {
 			var m = modeSel.value;
 			portRow.style.display = (m === 'direct') ? 'none' : '';
 			userRow.style.display = (m === 'direct') ? 'none' : '';
+			cportRow.style.display = (m === 'direct') ? '' : 'none';
 			keyRow.style.display = (m === 'direct') ? 'none' : '';
 			apiRow.style.display = (m === 'direct') ? '' : 'none';
 			hostI.placeholder = (m === 'direct') ? '192.168.192.247' : '203.0.113.10';
@@ -1370,9 +1433,11 @@ return view.extend({
 									(h.mode === 'direct' || h.direct)
 										? E('span', { 'style': 'color:green; font-weight:bold; margin-right:6px;' }, [ '[' + _('Direct') + ']' ])
 										: E('span', { 'style': 'color:#888; margin-right:6px;' }, [ '[SSH]' ]),
-									(h.mode === 'direct')
-										? (h.host + ':' + h.controller_port + _(' (ZeroTier direct)'))
-										: (h.user + '@' + h.host + ':' + h.port + _(' (controller port ') + h.controller_port + ')')
+								(h.mode === 'direct')
+									? (h.host + ':' + h.controller_port + _(' (ZeroTier direct)'))
+									: (h.user + '@' + h.host + ':' + h.port + (h.controller_port
+										? _(' (controller port ') + h.controller_port + ')'
+										: _(' (controller port auto-discovered)')))
 								]),
 								h.key_present || h.mode === 'direct'
 									? (h.mode === 'direct' ? E('div', { 'style': 'font-size:12px; color:green;' }, [_('API token stored')]) : E('div', { 'style': 'font-size:12px; color:green;' }, [_('SSH key installed')]))
